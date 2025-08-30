@@ -1,0 +1,30 @@
+<launch>
+
+    <arg name="robot_frame" default="base_link" />
+    <arg name="planning_frame" default="local" />
+
+    <node name="tinyhelm_stationkeeping_node" pkg="tinyhelm_stationkeeping" type="stationkeeping_node.py" output="screen">
+
+        <param name="robot_frame" value="$(arg robot_frame)"/>
+        <param name="planning_frame" value="$(arg planning_frame)"/>
+
+        <!--Speeds will be clamped to these values -->
+        <param name="max_linear_speed" value="1.0"/>
+        <param name="max_turning_speed" value="1.0"/>
+
+        <!-- The radius we intend to stay in-->
+        <param name="max_divergence" value="3.0"/>
+
+        <!-- If any obstacles are defined then line divergence + robot width are used for finding a suitably wide path.-->
+        <param name="deadzone_fraction" value="0.1"/>
+
+        <!-- PID params for rotational heading control.-->
+        <param name="P" value="3.0"/>
+        <param name="I" value="0.002"/>
+        <param name="D" value="65.0"/>
+
+        <!-- Update rate, should be about the same as localization rate.-->
+        <param name="rate" value="30"/>
+    </node>
+
+</launch>

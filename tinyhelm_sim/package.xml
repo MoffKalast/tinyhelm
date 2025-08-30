@@ -1,0 +1,27 @@
+<package format="2">
+	<name>tinyhelm_sim</name>
+	<version>0.1.0</version>
+	<description>A package for simulating a simple ASV.</description>
+
+	<maintainer email="vid.rijavec@fri.uni-lj.si">Vid Rijavec</maintainer>
+	<author>Vid Rijavec</author>
+	<license>BSD</license>
+
+	<buildtool_depend>catkin</buildtool_depend>
+
+	<build_depend>rospy</build_depend>
+
+	<depend>python3-pyproj</depend>
+	<depend>python3-noise</depend>
+	<depend>python3-pillow</depend>
+	<depend>python3-requests</depend>
+	<depend>python3-numpy</depend>
+
+	<exec_depend>rospy</exec_depend>
+	<exec_depend>std_msgs</exec_depend>
+	<exec_depend>geometry_msgs</exec_depend>
+	<exec_depend>sensor_msgs</exec_depend>
+	<exec_depend>visualization_msgs</exec_depend>
+	<exec_depend>nav_msgs</exec_depend>
+
+</package>

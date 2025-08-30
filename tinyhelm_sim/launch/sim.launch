@@ -1,0 +1,8 @@
+<launch>
+	<node name="tinyhelm_world_sim_node" pkg="tinyhelm_sim" type="sim.py" output="screen">
+		<param name="origin_lat" value="43.379296"/>
+		<param name="origin_lon" value="16.602522"/>
+		<param name="realtime_factor" value="1.0"/>
+		<param name="rate" value="30"/>
+	</node>
+</launch>

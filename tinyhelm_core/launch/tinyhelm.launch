@@ -1,0 +1,21 @@
+<launch>
+
+    <arg name="robot_frame" default="base_link" />
+    <arg name="planning_frame" default="local" />
+
+    <include file="$(find tinyhelm_stationkeeping)/launch/stationkeeping.launch">
+        <arg name="robot_frame" value="$(arg robot_frame)"/>
+        <arg name="planning_frame" value="$(arg planning_frame)"/>
+    </include>
+
+    <include file="$(find tinyhelm_waypoints)/launch/asv.launch">
+        <arg name="robot_frame" value="$(arg robot_frame)"/>
+        <arg name="planning_frame" value="$(arg planning_frame)"/>
+    </include>
+
+    <include file="$(find tinyhelm_core)/launch/_core.launch">
+        <arg name="robot_frame" value="$(arg robot_frame)"/>
+        <arg name="planning_frame" value="$(arg planning_frame)"/>
+    </include>
+
+</launch>
