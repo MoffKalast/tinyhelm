@@ -3,7 +3,7 @@
 import math
 import numpy as np
 
-from geometry_msgs.msg import Pose, Point, TransformStamped
+from geometry_msgs.msg import Pose, Point
 
 def normalize_angle(a):
 	while a > math.pi:
@@ -15,7 +15,7 @@ def normalize_angle(a):
 def clamp(num, min, max):
 	return min if num < min else max if num > max else num
 
-def transform_to_pose(t: TransformStamped):
+def transform_to_pose(t):
 	pose = Pose()
 	pose.position.x = t.transform.translation.x
 	pose.position.y = t.transform.translation.y

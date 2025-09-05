@@ -10,6 +10,10 @@ from geo_utils import integrate_latlon
 
 class VesselSimNode:
     def __init__(self):
+
+        self.param_base_link = rospy.get_param("~base_link", "base_link")
+        self.param_imu_link = rospy.get_param("~imu_link", "imu_link")
+
         # Position state
         self.lat = math.radians(rospy.get_param("~origin_lat", 0.0))
         self.lon = math.radians(rospy.get_param("~origin_lon", 0.0))
@@ -119,7 +123,7 @@ class VesselSimNode:
         # NavSatFix
         fix = NavSatFix()
         fix.header.stamp = rospy.Time.now()
-        fix.header.frame_id = "gnss"
+        fix.header.frame_id = self.param_base_link
         fix.latitude = math.degrees(self.lat)
         fix.longitude = math.degrees(self.lon)
         fix.altitude = z
@@ -130,7 +134,7 @@ class VesselSimNode:
         # IMU
         imu = Imu()
         imu.header.stamp = fix.header.stamp
-        imu.header.frame_id = "imu_link"
+        imu.header.frame_id = self.param_imu_link
         rotation = Rotation.from_euler('xyz', [roll, pitch, self.yaw])
         quat = rotation.as_quat()  # [x,y,z,w]
         imu.orientation.x, imu.orientation.y, imu.orientation.z, imu.orientation.w = quat

@@ -5,12 +5,13 @@ import tf
 import tf2_ros
 import tf2_geometry_msgs
 
-from geometry_msgs.msg import PoseStamped, Twist, Point
+from geometry_msgs.msg import PoseStamped, Twist, Point, TransformStamped, Pose
 from nav_msgs.msg import Odometry
 from visualization_msgs.msg import Marker, MarkerArray
-from std_msgs.msg import Header, Bool
+from std_msgs.msg import Header, Bool, Empty
 from dynamic_reconfigure.server import Server as DynamicReconfigureServer
 
+from tinyhelm_core.msg import ControllerStatus
 from tinyhelm_stationkeeping.cfg import StationKeepingConfig
 
 from tf2_geometry_msgs import do_transform_pose
@@ -40,15 +41,16 @@ class StationKeepingNode:
 		)
 		self.deadzone = self.DEADZONE_FRACT * self.MAX_DIVEGENCE
 
-		# TF listeners
-		self.tf_listener = tf.TransformListener()
 		self.tf2_buffer = tf2_ros.Buffer()
 		self.tf2_listener = tf2_ros.TransformListener(self.tf2_buffer)
 
-		self.cmd_vel_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
+		self.cmd_vel_pub = rospy.Publisher("/cmd_vel_stationkeeping", Twist, queue_size=1)
 		self.marker_pub = rospy.Publisher("/stationkeeping/debug_markers", MarkerArray, queue_size=1)
+		self.status_pub = rospy.Publisher("/stationkeeping/status", ControllerStatus, queue_size=1, latch=True)
 
 		self.goal_sub = rospy.Subscriber("/hold_position", PoseStamped, self.position_callback, queue_size=1)
+
+		self.estop_sub = rospy.Subscriber("/hold_position/clear", Empty, self.estop_callback)
 
 		# Tracking enable and disable messages while publishing latched state
 		self.enabled_sub = rospy.Subscriber("/stationkeeping/enabled", Bool, self.enabled_callback)
@@ -58,7 +60,14 @@ class StationKeepingNode:
 		# Dynamic reconfigure server
 		self.dyn_srv = DynamicReconfigureServer(StationKeepingConfig, self.reconfigure_callback)
 
+		self.set_status(ControllerStatus.IDLE, "Stationkeeping initialized.")
 		rospy.loginfo("Station keeping node initialized")
+
+	def set_status(self, status, string):
+		msg = ControllerStatus()
+		msg.status = status
+		msg.message = string
+		self.status_pub.publish(msg)
 
 	def reconfigure_callback(self, config, level):
 		self.DEBUG_MARKERS = config.publish_debug_markers
@@ -74,7 +83,7 @@ class StationKeepingNode:
 		self.pid.kd = config.D
 		return config
 
-	def position_callback(self, msg):
+	def position_callback(self, msg: PoseStamped):
 
 		if self.PLANNING_FRAME == msg.header.frame_id:
 			rospy.loginfo("------------------")
@@ -93,10 +102,15 @@ class StationKeepingNode:
 		rospy.loginfo("Position: X: %f, Y: %f, Z: %f", pose.position.x, pose.position.y, pose.position.z)
 		rospy.loginfo("Orientation: X: %f, Y: %f, Z: %f, W: %f", pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w)
 
+		self.set_status(ControllerStatus.ACTIVE, f"Holding position {pose.position.x},{pose.position.y}.")
+
 		self.goal_pose = msg
 		self.enabled = True
 
-	def enabled_callback(self, msg):
+	def estop_callback(self, msg: Empty):
+		self.enabled_callback(Bool(False))
+
+	def enabled_callback(self, msg: Bool):
 		if msg.data != self.enabled:
 			self.enabled = msg.data
 			self.enabled_pub.publish(self.enabled)
@@ -105,8 +119,10 @@ class StationKeepingNode:
 				self.send_twist(0, 0)
 				self.delete_debug_markers()
 				self.goal_pose = None
+				rospy.loginfo("Stationkeeping stopped.")
+				self.set_status(ControllerStatus.ESTOPPED, f"Stationkeeping stopped.")
 
-	def get_goal_distance(self, transform):
+	def get_goal_distance(self, transform: TransformStamped):
 		goal_x = self.goal_pose.pose.position.x
 		goal_y = self.goal_pose.pose.position.y
 
@@ -115,7 +131,7 @@ class StationKeepingNode:
 
 		return math.hypot(goal_x - x, goal_y - y)
 	
-	def get_angle_error(self, current_pose, target_position):
+	def get_angle_error(self, current_pose: Pose, target_position: Point):
 		_, _, current_yaw = euler_from_quaternion([
 			current_pose.orientation.x,
 			current_pose.orientation.y,
@@ -142,6 +158,7 @@ class StationKeepingNode:
 			self.goal_pose = PoseStamped()
 			self.goal_pose.header.frame_id = self.PLANNING_FRAME
 			self.goal_pose.pose = transform_to_pose(trans)
+			self.set_status(ControllerStatus.ACTIVE, f"Stationkeeping started in place.")
 
 		self.publish_markers()
 
@@ -172,6 +189,9 @@ class StationKeepingNode:
 		frac = clamp(frac, 0.0, 1.0)
 		linear_vel = self.MAX_LINEAR_SPD * math.pow(frac, 0.7)
 
+		if heading_error > math.radians(30):
+			linear_vel = 0
+
 		if not forward:
 			linear_vel = -linear_vel
 
@@ -179,11 +199,11 @@ class StationKeepingNode:
 
 	def run(self):
 		while not rospy.is_shutdown():
-			#try:
-			self.update()
-			#except Exception as e:
-				#rospy.logwarn(str(e))
-				#return
+			try:
+				self.update()
+			except Exception as e:
+				rospy.logwarn(str(e))
+				self.set_status(ControllerStatus.ERROR, str(e))
 			self.RATE.sleep()
 
 	def send_twist(self, linear, angular):

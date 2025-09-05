@@ -1,21 +1,11 @@
 <launch>
 
-    <arg name="robot_frame" default="base_link" />
-    <arg name="planning_frame" default="local" />
+    <rosparam file="$(find tinyhelm_core)/param/config.yaml" command="load"/>
 
-    <include file="$(find tinyhelm_stationkeeping)/launch/stationkeeping.launch">
-        <arg name="robot_frame" value="$(arg robot_frame)"/>
-        <arg name="planning_frame" value="$(arg planning_frame)"/>
-    </include>
+    <include file="$(find tinyhelm_stationkeeping)/launch/stationkeeping.launch"/>
+    <include file="$(find tinyhelm_waypoints)/launch/asv.launch"/>
 
-    <include file="$(find tinyhelm_waypoints)/launch/asv.launch">
-        <arg name="robot_frame" value="$(arg robot_frame)"/>
-        <arg name="planning_frame" value="$(arg planning_frame)"/>
-    </include>
-
-    <include file="$(find tinyhelm_core)/launch/_core.launch">
-        <arg name="robot_frame" value="$(arg robot_frame)"/>
-        <arg name="planning_frame" value="$(arg planning_frame)"/>
-    </include>
+    <node name="tinyhelm_core_node" pkg="tinyhelm_core" type="helm_core.py" output="screen"/>
+    <node name="tinyhelm_cmd_vel_mux" pkg="tinyhelm_core" type="cmd_vel_mux" output="screen"/>
 
 </launch>

@@ -5,8 +5,8 @@
 
     <node name="tinyhelm_waypoints_node" pkg="tinyhelm_waypoints" type="line_planner_node.py" output="screen">
 
-        <param name="robot_frame" value="base_link"/>
-        <param name="planning_frame" value="local"/>
+        <param name="robot_frame" value="$(arg robot_frame)"/>
+        <param name="planning_frame" value="$(arg planning_frame)"/>
 
         <param name="publish_debug_markers" value="true"/>
         <param name="ignore_altitude" value="true"/>

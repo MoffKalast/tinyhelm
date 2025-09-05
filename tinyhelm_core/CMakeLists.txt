@@ -11,9 +11,9 @@ find_package(catkin REQUIRED COMPONENTS
   message_generation
 )
 
-add_service_files(
+add_message_files(
   FILES
-  TopicList.srv
+  ControllerStatus.msg
 )
 
 generate_messages(

@@ -18,6 +18,7 @@ from tf2_geometry_msgs import do_transform_pose
 
 from dynamic_reconfigure.server import Server as DynamicReconfigureServer
 
+from tinyhelm_core.msg import ControllerStatus
 from tinyhelm_waypoints.cfg import LinePlannerConfig
 from nav_msgs.msg import Path
 
@@ -26,10 +27,11 @@ PLANNING_FRAME = "map"
 
 class GoalServer:
 
-	def __init__(self, tf2_buffer, update_plan):
+	def __init__(self, tf2_buffer, set_status, update_plan):
 		self.start_goal = None
 		self.end_goal = None
 		self.tf2_buffer = tf2_buffer
+		self.set_status = set_status
 		self.update_plan = update_plan
 
 		self.simple_goal_sub = rospy.Subscriber("/move_base_simple/waypoints", Path, self.route_callback)
@@ -49,12 +51,15 @@ class GoalServer:
 		self.route = []
 		self.route_index = 0
 		self.update_plan()
+		self.set_status(ControllerStatus.ESTOPPED, "Planner stopped.")
 
 	def goal_callback(self, goal):
 		self.route = []
 		self.route_index = 0
 		self.process_goal(goal)
 		self.update_plan()
+
+		self.set_status(ControllerStatus.ACTIVE, "Navigation started!")
 
 	def route_callback(self, msg):
 		rospy.loginfo("New route received.")
@@ -69,23 +74,28 @@ class GoalServer:
 		self.process_goal(self.route[0])
 		self.update_plan()
 
+		self.set_status(ControllerStatus.ACTIVE, "Navigation started!")
+
 	def get_goals(self):
 		return self.start_goal, self.end_goal
 	
 	def goal_reached(self):
 		if len(self.route) > 0:
-			rospy.loginfo("Goal #%i reached.",self.route_index)
+			rospy.loginfo("Goal #{self.route_index} reached.")
 			if self.route_index < len(self.route)-1:
 				self.route_index +=1
 				self.process_goal(self.route[self.route_index])
+				self.set_status(ControllerStatus.ACTIVE, "Goal #{self.route_index} reached, continuing route.")
 			else:
 				rospy.loginfo("-> Route finished.")
 				self.start_goal = None
 				self.end_goal = None
+				self.set_status(ControllerStatus.FINISHED, "Route finished.")
 		else:
 			rospy.loginfo("Simple goal reached.")
 			self.start_goal = None
 			self.end_goal = None
+			self.set_status(ControllerStatus.FINISHED, "Simple goal reached.")
 
 		self.update_plan()
 
@@ -154,14 +164,13 @@ class LineFollowingController:
 		self.DEBUG_MARKERS = rospy.get_param('~publish_debug_markers', True)
 		self.markers = DebugMarkers(PLANNING_FRAME)
 
-		self.tf_listener = tf.TransformListener()
-
 		self.tf2_buffer = tf2_ros.Buffer()
 		self.tf2_listener = tf2_ros.TransformListener(self.tf2_buffer)
 
-		self.cmd_vel_pub = rospy.Publisher("cmd_vel", Twist, queue_size=1)
+		self.cmd_vel_pub = rospy.Publisher("cmd_vel_waypoints", Twist, queue_size=1)
 
-		self.status_pub = rospy.Publisher("line_planner/active", Bool, queue_size=1, latch=True)
+		self.status_pub = rospy.Publisher("line_planner/status", ControllerStatus, queue_size=1, latch=True)
+		self.active_pub = rospy.Publisher("line_planner/active", Bool, queue_size=1, latch=True)
 		self.plan_pub = rospy.Publisher("line_planner/plan", Path, queue_size=1, latch=True)
 		self.marker_pub = rospy.Publisher("line_planner/markers", MarkerArray, queue_size=1)
 
@@ -177,17 +186,24 @@ class LineFollowingController:
 			rospy.get_param('D', 65.0)
 		)
 
-		self.goal_server = GoalServer(self.tf2_buffer, self.update_plan)
+		self.goal_server = GoalServer(self.tf2_buffer, self.set_status, self.update_plan)
 		self.active = False
 
 		self.reconfigure_server = DynamicReconfigureServer(LinePlannerConfig, self.dynamic_reconfigure_callback)
 
 		self.marker_publish_skip = 0
-		self.status_pub.publish(False)
+		self.active_pub.publish(False)
 
 		rospy.loginfo("Line planner started.")
 		rospy.loginfo("Robot frame: "+ROBOT_FRAME)
 		rospy.loginfo("Planning frame: "+PLANNING_FRAME)
+		self.set_status(ControllerStatus.IDLE, "Waypoint planner initialized.")
+
+	def set_status(self, status, string):
+		msg = ControllerStatus()
+		msg.status = status
+		msg.message = string
+		self.status_pub.publish(msg)
 
 	def dynamic_reconfigure_callback(self, config, level):
 		self.pid.kp = config.P
@@ -281,7 +297,7 @@ class LineFollowingController:
 		
 		try:
 			self.active = True
-			self.status_pub.publish(True)
+			self.active_pub.publish(True)
 			pose = transform_to_pose(self.tf2_buffer.lookup_transform(PLANNING_FRAME, ROBOT_FRAME, rospy.Time(0)))
 
 			target_position = project_position(
@@ -319,6 +335,7 @@ class LineFollowingController:
 
 		except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
 			rospy.logwarn("TF Exception")
+			self.set_status(ControllerStatus.ERROR, "TF Exception.")
 
 	def update_plan(self):
 
@@ -371,8 +388,10 @@ class LineFollowingController:
 		if self.DEBUG_MARKERS:
 			self.markers.delete_debug_markers()
 
+		self.set_status(ControllerStatus.ERROR, "Waypoint planner shutdown.")
+
 		self.active = False
-		self.status_pub.publish(False)
+		self.active_pub.publish(False)
 		self.pid.reset()
 		self.pid_vert.reset()
 

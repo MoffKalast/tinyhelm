@@ -13,7 +13,7 @@
         <param name="max_turning_speed" value="1.0"/>
 
         <!-- The radius we intend to stay in-->
-        <param name="max_divergence" value="3.0"/>
+        <param name="max_divergence" value="2.0"/>
 
         <!-- If any obstacles are defined then line divergence + robot width are used for finding a suitably wide path.-->
         <param name="deadzone_fraction" value="0.1"/>
