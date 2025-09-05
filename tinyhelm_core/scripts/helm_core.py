@@ -16,11 +16,13 @@ from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped
 from visualization_msgs.msg import MarkerArray, Marker
 
-from behaviours import Behaviours
+from behaviours import Behaviours, StateAction, Intention
 from config_loader import ConfigLoader
 from state_machine import StateMachine, HelmState
 
 from tinyhelm_core.msg import ControllerStatus
+
+from util import get_pose_in_frame
 
 STATUS_NAMES = {
     ControllerStatus.IDLE: "IDLE",
@@ -101,6 +103,9 @@ class HelmCore:
 				self.active_controller = None
 
 	def stop_controller(self, controller: str):
+			if controller == self.active_controller:
+				self.set_cmd_vel_mux("")
+			
 			ctrl = self.controllers.get(controller, {})
 			stop_pub = ctrl.get('stop_pub')
 			if stop_pub:
@@ -112,8 +117,6 @@ class HelmCore:
 			return
 
 		rospy.logwarn("Waypoint ESTOP triggered! Transitioning to stationkeeping.")
-
-		self.set_cmd_vel_mux("")
 		self.stop_controller(self.active_controller)
 
 		rospy.loginfo(f"Stopped '{self.active_controller}.'")
@@ -125,51 +128,116 @@ class HelmCore:
 		if not self.enabled:
 			rospy.logerr(f"Helm is disabled, ignoring command: {behaviour_name}")
 			return
-		
+
 		try:
 			get_plan = getattr(Behaviours, behaviour_name)
 		except Exception as e:
 			rospy.logerr(f"{behaviour_name} not defined. {e}")
 			return
-		
+
 		rospy.loginfo(f"Received command for {behaviour_name}, activating controller...")
 
-		#find the behaviour's nav controller
+		#process the plan
+		robot_pose: PoseStamped = get_pose_in_frame(self.tf2_buffer, self.PLANNING_FRAME, self.ROBOT_FRAME)
+		intention: Intention = get_plan(robot_pose, msg)
+
+		if intention is None or intention.plan is None:
+			rospy.logerr(f"{behaviour_name} returned no plan! What?!")
+			return
+		
+		controller_name = self.behaviours[behaviour_name]['controller']	
+		
+		# Stop previous controller cleanly before starting new
+		if self.active_controller and self.active_controller != controller_name:
+			self.stop_controller(self.active_controller)
+			rospy.sleep(0.1)
+			self.clear_markers()
+
+		self.set_intention(intention)
+
+	def set_intention(self, intention: Intention):
+
+		behaviour_name = intention.name
 		controller_name = self.behaviours[behaviour_name]['controller']	
 		controller = self.controllers[controller_name]
 
-		#process the plan
-		robot_pose = self.tf2_buffer.lookup_transform(self.PLANNING_FRAME, self.ROBOT_FRAME, rospy.Time(0))
-		nav_plan = get_plan(robot_pose, msg)
+		# Let's-a gooooo
+		if isinstance(intention.plan, PoseStamped):
+			if controller.get('pose_pub'):
+				controller['pose_pub'].publish(intention.plan)
+			else:
+				rospy.logerr(f"{behaviour_name}({controller_name}) cannot receive single goals.")
+				return
+		elif isinstance(intention.plan, Path):
+			if controller.get('path_pub'):
+				controller['path_pub'].publish(intention.plan)
+			else:
+				rospy.logerr(f"{behaviour_name}({controller_name}) cannot receive paths.")
+				return
+		else:
+			rospy.logerr(f"{behaviour_name}({controller_name}) sent incompatible plan object.")
+			return
 
-		if type(nav_plan) == PoseStamped:
-			if controller['pose_topic']:
-				controller['pose_pub'].publish(nav_plan)
-				rospy.loginfo(f"Published plan: {nav_plan}")
-			else:
-				rospy.logerr(f"{behaviour_name}({controller}) cannot receive single goals.")
-				return
-		elif type(nav_plan) == Path:
-			if controller['path_topic']:
-				controller['path_pub'].publish(nav_plan)
-				rospy.loginfo(f"Published plan: {nav_plan}")
-			else:
-				rospy.logerr(f"{behaviour_name}({controller}) cannot receive paths.")
-				return
-		
+		# store current behaviour metadata
+		self.current_behavior = {
+			'name': behaviour_name,
+			'controller': controller_name,
+			'intention': intention
+		}
 		self.active_controller = controller_name
 		self.set_cmd_vel_mux(controller_name)
 
-	def controller_status_callback(self, controller_name, msg):
-		rospy.loginfo(f"Controller {controller_name} reports:{STATUS_NAMES.get(msg.status)}, {msg.message}")
+	def controller_status_callback(self, controller_name: str, msg: ControllerStatus):
+		rospy.loginfo(f"Controller {controller_name} reports: {STATUS_NAMES.get(msg.status, '???')} - {msg.message}")
 
-		if controller_name == self.active_controller:
-			if msg.status == ControllerStatus.ESTOPPED:
-				pass
+		# Case 1: controller goes ACTIVE but helm didn't start it, I guess we're doing that now
+		if msg.status == ControllerStatus.ACTIVE and controller_name != self.active_controller:
+			rospy.logwarn(f"Controller {controller_name} became active externally. ALRIGHTY THEN!")
+			self.active_controller = controller_name
+			self.current_behavior = {
+				'name': None,
+				'controller': controller_name,
+				'intention': None
+			}
+			self.smach.set_state(HelmState.NAVIGATING)  # wrong assumption
 
+		# If this isn't the active one, ignore
+		if controller_name != self.active_controller:
+			return
 
-		#TODO monitor if active controller is enabled, do recovery things if not
-		pass
+		# Case 2: handle outcomes for the current behaviour
+		if not self.current_behavior or not self.current_behavior.get('intention'):
+			return
+
+		intention = self.current_behavior['intention']
+		self.smach.set_state(intention.state)
+
+		if msg.status == ControllerStatus.FINISHED:
+			if intention.on_finish == StateAction.HOLD_POSITION:
+				rospy.loginfo("Finished plan, switching to stationkeeping.")
+
+				if isinstance(intention.plan, Path):
+					self.behaviour_callback('stationkeeping', intention.plan.poses[-1]) #stop at last waypoint exactly
+				else:
+					self.behaviour_callback('stationkeeping', None)# just stay where you are
+
+			elif intention.on_finish == StateAction.RESTART:
+				rospy.loginfo("Finished plan, restarting...")
+				self.set_intention(intention)
+
+			elif intention.on_finish == StateAction.IDLE:
+				rospy.loginfo("Finished plan, going IDLE.")
+				self.active_controller = None
+				self.current_behavior = None
+				self.smach.set_state(HelmState.IDLE)
+				self.set_cmd_vel_mux("")
+
+			elif intention.on_finish == StateAction.RETURN_TO_HOME:
+				rospy.loginfo("Finished plan, returning home #TODO.")
+
+		elif msg.status in (ControllerStatus.ABORTED, ControllerStatus.ERROR):
+			rospy.logwarn(f"Controller {controller_name} is not feeling well: {msg.message}")
+			self.behaviour_callback('stationkeeping', None)
 
 	def markers_callback(self, controller_name, msg):
 		if controller_name == self.active_controller:
@@ -186,12 +254,12 @@ class HelmCore:
 		if self.active_controller is None:
 			self.clear_markers()
 
-		rospy.loginfo(f"Active controller {self.active_controller}")
+		#rospy.loginfo(f"Active controller {self.active_controller}")
 
 if __name__ == "__main__":
 	try:
 		node = HelmCore()
-		rate = rospy.Rate(0.5)
+		rate = rospy.Rate(1.0)
 		while not rospy.is_shutdown():
 			#try:
 			node.update()

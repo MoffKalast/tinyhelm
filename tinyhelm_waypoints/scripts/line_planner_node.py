@@ -335,7 +335,6 @@ class LineFollowingController:
 
 		except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
 			rospy.logwarn("TF Exception")
-			self.set_status(ControllerStatus.ERROR, "TF Exception.")
 
 	def update_plan(self):
 
@@ -382,13 +381,15 @@ class LineFollowingController:
 		twist.angular.z = angular
 		self.cmd_vel_pub.publish(twist)
 
+	def shutdown_cleanup(self):
+		self.set_status(ControllerStatus.ERROR, "Waypoint planner shutdown.")
+		self.reset()
+
 	def reset(self):
 		self.send_twist(0, 0, 0)
 
 		if self.DEBUG_MARKERS:
 			self.markers.delete_debug_markers()
-
-		self.set_status(ControllerStatus.ERROR, "Waypoint planner shutdown.")
 
 		self.active = False
 		self.active_pub.publish(False)
@@ -397,7 +398,7 @@ class LineFollowingController:
 
 ctrl = LineFollowingController()
 rate = rospy.Rate(rospy.get_param('rate', 30))
-rospy.on_shutdown(ctrl.reset)
+rospy.on_shutdown(ctrl.shutdown_cleanup)
 
 while not rospy.is_shutdown():
 	ctrl.update()

@@ -105,7 +105,7 @@ class StationKeepingNode:
 		self.set_status(ControllerStatus.ACTIVE, f"Holding position {pose.position.x},{pose.position.y}.")
 
 		self.goal_pose = msg
-		self.enabled = True
+		self.enabled_callback(Bool(True))
 
 	def estop_callback(self, msg: Empty):
 		self.enabled_callback(Bool(False))
