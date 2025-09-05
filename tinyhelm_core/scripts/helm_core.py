@@ -18,7 +18,6 @@ from visualization_msgs.msg import MarkerArray, Marker
 
 from behaviours import Behaviours, StateAction, Intention
 from config_loader import ConfigLoader
-from state_machine import StateMachine, HelmState
 
 from tinyhelm_core.msg import ControllerStatus
 
@@ -46,7 +45,6 @@ class HelmCore:
 			raise SystemExit(1)
 		
 		self.cfg_loader = ConfigLoader(self.params)
-		self.smach = StateMachine()
 
 		self.ROBOT_FRAME = self.params.get("robot_frame", "base_link")
 		self.PLANNING_FRAME = self.params.get("planning_frame", "map")
@@ -66,11 +64,13 @@ class HelmCore:
 
 		self.enabled = False
 		self.active_controller: Optional[str] = None
+		self.manual_control = False
 
 		self.controllers = self.cfg_loader.parse_controllers(self.controller_status_callback, self.markers_callback)
 		self.behaviours = self.cfg_loader.parse_behaviours(self.behaviour_callback)
 
 		self.estop_sub = rospy.Subscriber(self.estop_topic, Empty, self.estop_callback, queue_size=1)
+		self.teleop_override_sub = rospy.Subscriber("/teleop_override_active", Bool, self.teleop_override, queue_size=1)
 		
 		self.enabled_sub = rospy.Subscriber(self.enabled_topic, Bool, self.enabled_callback, queue_size=1)
 		self.enabled_pub = rospy.Publisher(self.enabled_topic, Bool, queue_size=1, latch=True)
@@ -88,6 +88,17 @@ class HelmCore:
 		else:
 			rospy.logdebug(f"Cmd_vel restricted to teleop only.'")
 			self.selector_pub.publish("")
+
+	def teleop_override(self, msg: Bool):
+		#indicator sent by the cmd_vel_mux, if there's an override happening right now
+
+		if self.manual_control and not msg.data:
+			#we just released control
+			if self.active_controller == "stationkeeping":
+				#move current position hold to new location
+				self.behaviour_callback('stationkeeping', None)
+
+		self.manual_control = msg.data
 		
 	def enabled_callback(self, msg: Bool):
 		if msg.data != self.enabled:
@@ -96,6 +107,7 @@ class HelmCore:
 
 			if self.enabled:
 				rospy.loginfo(f"Tinyhelm enabled!")
+				self.behaviour_callback('stationkeeping', None)
 			else:
 				rospy.loginfo(f"Tinyhelm disabled!")
 				self.set_cmd_vel_mux("")
@@ -117,12 +129,7 @@ class HelmCore:
 			return
 
 		rospy.logwarn("Waypoint ESTOP triggered! Transitioning to stationkeeping.")
-		self.stop_controller(self.active_controller)
-
-		rospy.loginfo(f"Stopped '{self.active_controller}.'")
-		self.active_controller = None
-
-		#TODO stationkeeping transition
+		self.behaviour_callback('stationkeeping', None)
 
 	def behaviour_callback(self, behaviour_name: str, msg: Any):
 		if not self.enabled:
@@ -133,6 +140,11 @@ class HelmCore:
 			get_plan = getattr(Behaviours, behaviour_name)
 		except Exception as e:
 			rospy.logerr(f"{behaviour_name} not defined. {e}")
+			return
+		
+		if isinstance(msg, Path) and len(msg.poses) == 0:
+			rospy.loginfo("Interpreting empty Path as stop.")
+			self.behaviour_callback('stationkeeping', None)
 			return
 
 		rospy.loginfo(f"Received command for {behaviour_name}, activating controller...")
@@ -199,7 +211,6 @@ class HelmCore:
 				'controller': controller_name,
 				'intention': None
 			}
-			self.smach.set_state(HelmState.NAVIGATING)  # wrong assumption
 
 		# If this isn't the active one, ignore
 		if controller_name != self.active_controller:
@@ -210,7 +221,6 @@ class HelmCore:
 			return
 
 		intention = self.current_behavior['intention']
-		self.smach.set_state(intention.state)
 
 		if msg.status == ControllerStatus.FINISHED:
 			if intention.on_finish == StateAction.HOLD_POSITION:
@@ -229,7 +239,6 @@ class HelmCore:
 				rospy.loginfo("Finished plan, going IDLE.")
 				self.active_controller = None
 				self.current_behavior = None
-				self.smach.set_state(HelmState.IDLE)
 				self.set_cmd_vel_mux("")
 
 			elif intention.on_finish == StateAction.RETURN_TO_HOME:
@@ -253,8 +262,6 @@ class HelmCore:
 	def update(self):
 		if self.active_controller is None:
 			self.clear_markers()
-
-		#rospy.loginfo(f"Active controller {self.active_controller}")
 
 if __name__ == "__main__":
 	try:
