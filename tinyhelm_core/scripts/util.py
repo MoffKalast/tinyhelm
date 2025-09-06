@@ -2,6 +2,8 @@ import rospy
 
 from tf2_ros import Buffer
 
+from typing import List
+
 from geometry_msgs.msg import TransformStamped, PoseStamped
 
 def get_pose_in_frame(tf2_buffer: Buffer, parent_frame: str, target_frame: str):
@@ -15,7 +17,7 @@ def get_pose_in_frame(tf2_buffer: Buffer, parent_frame: str, target_frame: str):
     ps.pose.orientation = ts.transform.rotation
     return ps
 
-def closest_pose_index(robot_pose: PoseStamped, poses: list[PoseStamped]) -> int:
+def closest_pose_index(robot_pose: PoseStamped, poses: List[PoseStamped]) -> int:
     """Find index of pose in `poses` closest to robot_pose."""
     rx, ry = robot_pose.pose.position.x, robot_pose.pose.position.y
 
