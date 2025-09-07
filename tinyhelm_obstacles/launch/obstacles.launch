@@ -1,6 +1,6 @@
 <launch>
 
-    <arg name="fixed_frame" default="world" />
+    <arg name="fixed_frame" default="local" />
     <arg name="cell_resolution" default="0.25"/>
 
     <!--<node name="tinyhelm_obstacles_node" pkg="tinyhelm_obstacles" type="sensor_to_obstacle_node.py" output="screen">
@@ -10,7 +10,7 @@
 
 	<node pkg="octomap_server" type="octomap_server_node" name="octomap_server">
 		<param name="resolution" value="0.5" />
-		<param name="frame_id" type="string" value="world" />
+		<param name="frame_id" type="string" value="$(arg fixed_frame)" />
 
 		<param name="sensor_model_max_range" value="25.0" />
         <param name="sensor_model_min_range" value="1.0" />

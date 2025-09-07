@@ -37,7 +37,7 @@ class VesselSimNode:
         self.tau_yaw = rospy.get_param("~tau_yaw", 0.25)
 
         # Simulation timing
-        self.rate_hz = rospy.get_param("~rate", 20.0)
+        self.rate_hz = rospy.get_param("~rate", 30.0)
         self.realtime_factor = rospy.get_param("~realtime_factor", 1.0)
 
         # Environment params

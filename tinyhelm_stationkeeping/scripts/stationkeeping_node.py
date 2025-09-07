@@ -189,8 +189,14 @@ class StationKeepingNode:
 		frac = clamp(frac, 0.0, 1.0)
 		linear_vel = self.MAX_LINEAR_SPD * math.pow(frac, 0.7)
 
-		if heading_error > math.radians(30):
-			linear_vel = 0
+		# Smooth ramp based on heading error
+		min_angle = math.radians(5)
+		max_angle = math.radians(20)
+
+		if heading_error > min_angle:
+			# Map heading_error from [min_angle, max_angle] -> [1, 0]
+			scale = 1.0 - clamp((heading_error - min_angle) / (max_angle - min_angle), 0.0, 1.0)
+			linear_vel *= scale
 
 		if not forward:
 			linear_vel = -linear_vel
@@ -236,7 +242,6 @@ class StationKeepingNode:
 
 		deadzone = self.DEADZONE_FRACT * self.MAX_DIVEGENCE
 
-		# Helper: make a circle line strip
 		def make_circle_marker(radius, color, ns, mid):
 			marker = Marker()
 			marker.header = header
@@ -244,13 +249,12 @@ class StationKeepingNode:
 			marker.id = mid
 			marker.type = Marker.LINE_STRIP
 			marker.action = Marker.ADD
-			marker.scale.x = 0.05  # line width
+			marker.scale.x = 0.05
 			marker.color.r = color[0]
 			marker.color.g = color[1]
 			marker.color.b = color[2]
 			marker.color.a = color[3]
 
-			# circle vertices
 			pts = []
 			N = 64
 			for i in range(N + 1):  # close the loop
