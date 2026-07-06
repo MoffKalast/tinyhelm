@@ -20,6 +20,7 @@ include_directories(
 
 install(PROGRAMS
     src/sim.py
+    scripts/sim_obstacles.py
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
