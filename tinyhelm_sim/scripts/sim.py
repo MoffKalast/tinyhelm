@@ -61,7 +61,7 @@ class VesselSimNode:
 
         # ROS I/O
         self.sub_cmd = rospy.Subscriber("/cmd_vel", Twist, self.cmd_cb, queue_size=1)
-        self.pub_fix = rospy.Publisher("/fix", NavSatFix, queue_size=1)
+        self.pub_fix = rospy.Publisher("/gnss/fix", NavSatFix, queue_size=1)
         self.pub_imu = rospy.Publisher("/imu/data", Imu, queue_size=1)
 
         self.sim_time = 0.0

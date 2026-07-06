@@ -23,7 +23,7 @@ from tinyhelm_waypoints.cfg import LinePlannerConfig
 from nav_msgs.msg import Path
 
 ROBOT_FRAME = "base_link"
-PLANNING_FRAME = "map"
+PLANNING_FRAME = "local"
 
 class GoalServer:
 
@@ -34,11 +34,11 @@ class GoalServer:
 		self.set_status = set_status
 		self.update_plan = update_plan
 
-		self.simple_goal_sub = rospy.Subscriber("/move_base_simple/waypoints", Path, self.route_callback)
-		self.simple_goal_sub = rospy.Subscriber("/move_base_simple/goal", PoseStamped, self.goal_callback)
-		self.clear_goals_sub = rospy.Subscriber("/move_base_simple/clear", Empty, self.reset)
+		self.simple_goal_sub = rospy.Subscriber("/waypoints/_path", Path, self.route_callback)
+		self.simple_goal_sub = rospy.Subscriber("/waypoints/_goal", PoseStamped, self.goal_callback)
+		self.clear_goals_sub = rospy.Subscriber("/waypoints/_clear", Empty, self.reset)
 
-		self.vertical_pub = rospy.Publisher("line_planner/vertical_target", Float32, queue_size=1)
+		self.vertical_pub = rospy.Publisher("/waypoints/_vertical_target", Float32, queue_size=1)
 
 		self.start_goal = None
 		self.end_goal = None
@@ -85,7 +85,7 @@ class GoalServer:
 			if self.route_index < len(self.route)-1:
 				self.route_index +=1
 				self.process_goal(self.route[self.route_index])
-				self.set_status(ControllerStatus.ACTIVE, "Goal #{self.route_index} reached, continuing route.")
+				self.set_status(ControllerStatus.ACTIVE, f"Goal #{self.route_index} reached, continuing route.")
 			else:
 				rospy.loginfo("-> Route finished.")
 				self.start_goal = None
@@ -143,8 +143,8 @@ class LineFollowingController:
 		rospy.init_node("line_following_controller")
 		global ROBOT_FRAME, PLANNING_FRAME
 
-		ROBOT_FRAME = rospy.get_param('~robot_frame', 'base_link')
-		PLANNING_FRAME = rospy.get_param('~planning_frame', 'map')
+		ROBOT_FRAME = rospy.get_param('/robot_frame', 'base_link')
+		PLANNING_FRAME = rospy.get_param('/planning_frame', 'local')
 		
 		self.MIN_GOAL_XY_DIST = rospy.get_param('~xy_distance_threshold', 0.5)
 		self.MIN_GOAL_Z_DIST = rospy.get_param('~z_distance_threshold', 0.5)
@@ -162,17 +162,17 @@ class LineFollowingController:
 		self.IGNORE_ALTITUDE = rospy.get_param('~ignore_altitude', False)
 
 		self.DEBUG_MARKERS = rospy.get_param('~publish_debug_markers', True)
-		self.markers = DebugMarkers(PLANNING_FRAME)
+
+		self.markers = DebugMarkers(PLANNING_FRAME, "/waypoints/_markers")
 
 		self.tf2_buffer = tf2_ros.Buffer()
 		self.tf2_listener = tf2_ros.TransformListener(self.tf2_buffer)
 
-		self.cmd_vel_pub = rospy.Publisher("cmd_vel_waypoints", Twist, queue_size=1)
+		self.cmd_vel_pub = rospy.Publisher("/cmd_vel_waypoints", Twist, queue_size=1)
 
-		self.status_pub = rospy.Publisher("line_planner/status", ControllerStatus, queue_size=1, latch=True)
-		self.active_pub = rospy.Publisher("line_planner/active", Bool, queue_size=1, latch=True)
-		self.plan_pub = rospy.Publisher("line_planner/plan", Path, queue_size=1, latch=True)
-		self.marker_pub = rospy.Publisher("line_planner/markers", MarkerArray, queue_size=1)
+		self.status_pub = rospy.Publisher("/waypoints/_status", ControllerStatus, queue_size=1, latch=True)
+		self.active_pub = rospy.Publisher("/waypoints/_active", Bool, queue_size=1, latch=True)
+		self.plan_pub = rospy.Publisher("/waypoints/_plan", Path, queue_size=1, latch=True)
 
 		self.pid = PID(
 			rospy.get_param('P', 3.0),
@@ -190,8 +190,6 @@ class LineFollowingController:
 		self.active = False
 
 		self.reconfigure_server = DynamicReconfigureServer(LinePlannerConfig, self.dynamic_reconfigure_callback)
-
-		self.marker_publish_skip = 0
 		self.active_pub.publish(False)
 
 		rospy.loginfo("Line planner started.")
@@ -341,23 +339,32 @@ class LineFollowingController:
 		msg = Path()
 		msg.header.frame_id = PLANNING_FRAME
 
-		if len(self.goal_server.route) > 1:
-			msg.poses = self.goal_server.route[self.goal_server.route_index:]
-		else:
-			start_goal, end_goal = self.goal_server.get_goals()
+		start_goal, end_goal = self.goal_server.get_goals()
 
-			if start_goal == None or end_goal == None:
+		if start_goal is None:
+			self.plan_pub.publish(Path())
+			return
+
+		if len(self.goal_server.route) > 0:
+			start = PoseStamped()
+			start.header.frame_id = PLANNING_FRAME
+			start.pose = start_goal
+
+			msg.poses.append(start)
+			msg.poses.extend(self.goal_server.route[self.goal_server.route_index:])
+
+		else:
+			if end_goal is None:
 				self.plan_pub.publish(Path())
 				return
 
 			start_stamped = PoseStamped()
 			start_stamped.header.frame_id = PLANNING_FRAME
 			start_stamped.pose = start_goal
-			msg.poses.append(start_stamped)
 
 			end_stamped = PoseStamped()
 			end_stamped.header.frame_id = PLANNING_FRAME
-			end_stamped.pose = end_goal		
+			end_stamped.pose = end_goal
 
 			msg.poses = [start_stamped, end_stamped]
 

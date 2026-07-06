@@ -46,11 +46,13 @@ class HelmCore:
 		
 		self.cfg_loader = ConfigLoader(self.params)
 
-		self.ROBOT_FRAME = self.params.get("robot_frame", "base_link")
-		self.PLANNING_FRAME = self.params.get("planning_frame", "map")
+		self.ROBOT_FRAME = rospy.get_param("/robot_frame", "base_link")
+		self.PLANNING_FRAME = rospy.get_param("/planning_frame", "map")
+		
 		self.estop_topic = self.params.get("estop_topic", "/tinyhelm/estop")
 		self.enabled_topic = self.params.get("enabled_topic", "/tinyhelm/enabled")
 		self.markers_topic = self.params.get("markers_topic", "/tinyhelm/markers")
+		self.home_topic = self.params.get("home_topic", "/tinyhelm/set_home")
 
 		#Multiplexer for cmd_vel
 		cmd_mux_cfg = self.params.get("cmd_vel_mux", {})
@@ -66,11 +68,14 @@ class HelmCore:
 		self.active_controller: Optional[str] = None
 		self.manual_control = False
 
+		self.manual_home = None
+
 		self.controllers = self.cfg_loader.parse_controllers(self.controller_status_callback, self.markers_callback)
 		self.behaviours = self.cfg_loader.parse_behaviours(self.behaviour_callback)
 
 		self.estop_sub = rospy.Subscriber(self.estop_topic, Empty, self.estop_callback, queue_size=1)
 		self.teleop_override_sub = rospy.Subscriber("/teleop_override_active", Bool, self.teleop_override, queue_size=1)
+		self.home_sub =  rospy.Subscriber(self.home_topic, PoseStamped, self.home_callback)
 		
 		self.enabled_sub = rospy.Subscriber(self.enabled_topic, Bool, self.enabled_callback, queue_size=1)
 		self.enabled_pub = rospy.Publisher(self.enabled_topic, Bool, queue_size=1, latch=True)
@@ -100,6 +105,9 @@ class HelmCore:
 
 		self.manual_control = msg.data
 		
+	def home_callback(self, msg: PoseStamped):
+		self.manual_home = msg
+
 	def enabled_callback(self, msg: Bool):
 		if msg.data != self.enabled:
 			self.enabled = msg.data

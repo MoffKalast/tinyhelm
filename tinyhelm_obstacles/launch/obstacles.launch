@@ -1,20 +1,16 @@
 <launch>
 
-	<arg name="fixed_frame" default="local" />
-	<arg name="robot_frame" default="base_link" />
 	<arg name="scan_topic" default="/scan_filtered" />
 
 	<node name="tinyhelm_scan_to_cloud_node" pkg="tinyhelm_obstacles" type="scan_to_cloud" output="screen">
-		<param name="fixed_frame" value="laser"/>
+		<param name="frame" value="laser"/>
 		<param name="scan_topic" value="$(arg scan_topic)"/>
-		<param name="cloud_topic" value="/obstacle_cloud/add"/>
+		<param name="cloud_topic" value="/obstacle_cloud"/>
 	</node>
 
 	<node name="obstacle_planner_node" pkg="tinyhelm_obstacles" type="obstacle_planner_node" output="screen">
-		<param name="fixed_frame" value="$(arg fixed_frame)"/>
-		<param name="robot_frame" value="$(arg robot_frame)"/>
-		<param name="tactical_plan_topic" value="/line_planner/plan"/>
-		<param name="divergence_param" value="/tinyhelm_waypoints_node/max_line_divergence"/>
+		<param name="tactical_plan_topic" value="/waypoints/_plan"/>
+		<param name="divergence_param" value="/waypoints/max_line_divergence"/>
 
 		<param name="fine_resolution" value="0.25"/>
 		<param name="fine_size" value="512"/>
@@ -32,7 +28,6 @@
 	</node>
 
 	<node name="collision_monitor" pkg="tinyhelm_obstacles" type="collision_monitor" output="screen">
-		<param name="robot_frame" value="$(arg robot_frame)"/>
 		<param name="vessel_halfwidth" value="1.0"/>
 		<param name="margin" value="2.0"/>
 		<param name="braking_horizon" value="3.0"/>

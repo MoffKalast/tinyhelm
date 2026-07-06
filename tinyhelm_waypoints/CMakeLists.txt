@@ -10,7 +10,7 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 generate_dynamic_reconfigure_options(
-    config/LinePlanner.cfg
+    config/Waypoints.cfg
     config/AreaToPath.cfg
 )
 
@@ -23,7 +23,7 @@ include_directories(
 )
 
 install(PROGRAMS
-    scripts/line_planner_node.py
+    scripts/waypoints_node.py
     scripts/area_to_path_node.py
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

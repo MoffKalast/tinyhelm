@@ -14,17 +14,19 @@ class BoundingBox3DListener:
 	def __init__(self):
 		rospy.init_node("area_to_path_node")
 
-		self.path_pub = rospy.Publisher("/move_base_simple/waypoints", Path, queue_size=10)
+		#eavesdrop to the main home topic
+		self.home_topic = rospy.get_param("/tinyhelm_core/home_topic", "/tinyhelm/set_home")
+		self.home_sub = rospy.Subscriber(self.home_topic, PoseStamped, self.home_callback)
 
-		self.lawnmower_sub = rospy.Subscriber("/area_to_path/lawnmower", PolygonStamped, self.lawnmower_callback)
-		self.square_sub = rospy.Subscriber("/area_to_path/expanding_square", PolygonStamped, self.square_callback)
-		self.sierra_sub = rospy.Subscriber("/area_to_path/victor_sierra", PolygonStamped, self.sierra_callback)
-		self.home_sub = rospy.Subscriber("/area_to_path/home", PolygonStamped, self.home_callback)
+		self.path_pub = rospy.Publisher("/tinyhelm/waypoints", Path, queue_size=10)
 
-		self.STEP_SIZE = rospy.get_param("~step_size", 2.0)  # The step size (X meters) in the path
+		self.lawnmower_sub = rospy.Subscriber("/tinyhelm/lawnmower", PolygonStamped, self.lawnmower_callback)
+		self.square_sub = rospy.Subscriber("/tinyhelm/expanding_square", PolygonStamped, self.square_callback)
+		self.sierra_sub = rospy.Subscriber("/tinyhelm/victor_sierra", PolygonStamped, self.sierra_callback)
 
-		self.home_point = None
-		self.home_header = None
+		self.STEP_SIZE = rospy.get_param("~step_size", 5.0)  # The step size (X meters) in the path
+
+		self.home_pose = None
 
 		self.reconfigure_server = DynamicReconfigureServer(AreaToPathConfig, self.dynamic_reconfigure_callback)
 
@@ -43,20 +45,7 @@ class BoundingBox3DListener:
 		self.path_pub.publish(path)
 
 	def home_callback(self, msg):
-		p = msg.polygon.points
-
-		if len(p) != 4:
-			rospy.logwarn("Invalid Polygon, path creation requires a 4 vertex square.")
-			return
-
-		self.home_point = Point(
-			x=(p[0].x + p[2].x) / 2,
-			y=(p[0].y + p[2].y) / 2
-		)
-
-		self.home_header = msg.header
-
-		rospy.loginfo("Home point set.")
+		self.home_pose = msg
 
 	def norm(self, point):
 		p = Point()
@@ -144,8 +133,8 @@ class BoundingBox3DListener:
 
 		poses.append(self.get_pose(msg.header, center.x, center.y))
 
-		if self.home_point != None:
-			poses.append(self.get_pose(self.home_header, self.home_point.x, self.home_point.y))
+		if self.home_pose != None:
+			poses.append(self.home_pose)
 
 		self.send_path(msg.header, poses)
 
@@ -188,8 +177,8 @@ class BoundingBox3DListener:
 				poses.append(self.get_pose(msg.header, pos[0], pos[1]))
 				dir = [-dir[1], dir[0]]  # Rotate direction 90 degrees to the right
 
-		if self.home_point != None:
-			poses.append(self.get_pose(self.home_header, self.home_point.x, self.home_point.y))
+		if self.home_pose != None:
+			poses.append(self.home_pose)
 
 		self.send_path(msg.header, poses)
 
@@ -254,8 +243,8 @@ class BoundingBox3DListener:
 					p[0].y + i * vec_step.y,
 				))
 
-		if self.home_point != None:
-			poses.append(self.get_pose(self.home_header, self.home_point.x, self.home_point.y))
+		if self.home_pose != None:
+			poses.append(self.home_pose)
 
 		self.send_path(msg.header, poses)
 

@@ -8,9 +8,9 @@ from geometry_msgs.msg import Point, Pose
 
 class DebugMarkers:
 
-    def __init__(self, planning_frame):
+    def __init__(self, planning_frame, topic_string):
         self.planning_frame = planning_frame
-        self.marker_pub = rospy.Publisher("line_planner/markers", MarkerArray, queue_size=1)
+        self.marker_pub = rospy.Publisher(topic_string, MarkerArray, queue_size=1)
 
         self.queued_marker_array = None
         self.publish_timer = rospy.Timer(rospy.Duration(0.2), self._timer_callback)  # 200 ms throttle

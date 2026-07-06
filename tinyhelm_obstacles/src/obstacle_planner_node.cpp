@@ -28,9 +28,10 @@ using namespace tinyhelm;
 class ObstaclePlannerNode {
 public:
 	ObstaclePlannerNode(ros::NodeHandle& nh, ros::NodeHandle& pnh) : tf_listener_(tf_buffer_) {
-		pnh.param<std::string>("fixed_frame", fixed_frame_, "local");
-		pnh.param<std::string>("robot_frame", robot_frame_, "base_link");
-		pnh.param<std::string>("tactical_plan_topic", tactical_plan_topic_, "/line_planner/plan");
+		pnh.param<std::string>("/planning_frame", planning_frame_, "local");
+		pnh.param<std::string>("/robot_frame", robot_frame_, "base_link");
+		
+		pnh.param<std::string>("tactical_plan_topic", tactical_plan_topic_, "/waypoints/_plan");
 		pnh.param<std::string>("divergence_param", divergence_param_, "/tinyhelm_waypoints_node/max_line_divergence");
 
 		pnh.param("fine_resolution", fine_res_, 0.25);
@@ -78,7 +79,7 @@ public:
 		timer_ = nh.createTimer(ros::Duration(1.0 / monitor_rate_), &ObstaclePlannerNode::tick, this);
 		last_grid_publish_ = ros::Time(0);
 		last_replan_ = ros::Time(0);
-		ROS_INFO("obstacle_planner: fine %.2fm x %d, coarse %.2fm x %d, frame %s", fine_res_, fine_size_, coarse_res_, coarse_size_, fixed_frame_.c_str());
+		ROS_INFO("obstacle_planner: fine %.2fm x %d, coarse %.2fm x %d, frame %s", fine_res_, fine_size_, coarse_res_, coarse_size_, planning_frame_.c_str());
 	}
 
 private:
@@ -87,9 +88,9 @@ private:
 
 	void ingest(const sensor_msgs::PointCloud2::ConstPtr& msg, bool hits) {
 		sensor_msgs::PointCloud2 cloud;
-		if (msg->header.frame_id != fixed_frame_) {
+		if (msg->header.frame_id != planning_frame_) {
 			try {
-				auto tf = tf_buffer_.lookupTransform(fixed_frame_, msg->header.frame_id, msg->header.stamp, ros::Duration(0.1));
+				auto tf = tf_buffer_.lookupTransform(planning_frame_, msg->header.frame_id, msg->header.stamp, ros::Duration(0.1));
 				tf2::doTransform(*msg, cloud, tf);
 			} catch (tf2::TransformException& e) {
 				ROS_WARN_THROTTLE(5.0, "obstacle_planner: cloud transform failed: %s", e.what());
@@ -175,7 +176,7 @@ private:
 
 	bool getRobotPose(double& x, double& y) {
 		try {
-			auto tf = tf_buffer_.lookupTransform(fixed_frame_, robot_frame_, ros::Time(0));
+			auto tf = tf_buffer_.lookupTransform(planning_frame_, robot_frame_, ros::Time(0));
 			x = tf.transform.translation.x;
 			y = tf.transform.translation.y;
 			return true;
@@ -217,7 +218,7 @@ private:
 		if (remaining_.empty()) return;
 
 		nav_msgs::Path rem;
-		rem.header.frame_id = fixed_frame_;
+		rem.header.frame_id = planning_frame_;
 		rem.header.stamp = ev.current_real;
 		rem.poses = remaining_;
 		remaining_pub_.publish(rem);
@@ -332,7 +333,7 @@ private:
 
 	void replan(double rx, double ry) {
 		nav_msgs::Path out;
-		out.header.frame_id = fixed_frame_;
+		out.header.frame_id = planning_frame_;
 		out.header.stamp = ros::Time::now();
 
 		double px = rx, py = ry;
@@ -441,7 +442,7 @@ private:
 
 	geometry_msgs::PoseStamped makePose(double x, double y, double z) {
 		geometry_msgs::PoseStamped p;
-		p.header.frame_id = fixed_frame_;
+		p.header.frame_id = planning_frame_;
 		p.pose.position.x = x;
 		p.pose.position.y = y;
 		p.pose.position.z = z;
@@ -464,7 +465,7 @@ private:
 	void publishGrid(const DecayGrid& grid, ros::Publisher& pub) {
 		if (pub.getNumSubscribers() == 0) return;
 		nav_msgs::OccupancyGrid msg;
-		msg.header.frame_id = fixed_frame_;
+		msg.header.frame_id = planning_frame_;
 		msg.header.stamp = ros::Time::now();
 		msg.info.resolution = grid.resolution();
 		msg.info.width = msg.info.height = grid.size();
@@ -491,7 +492,7 @@ private:
 	ros::Publisher path_pub_, remaining_pub_, status_pub_, fine_grid_pub_, coarse_grid_pub_;
 	ros::Timer timer_;
 
-	std::string fixed_frame_, robot_frame_, tactical_plan_topic_, divergence_param_;
+	std::string planning_frame_, robot_frame_, tactical_plan_topic_, divergence_param_;
 	double fine_res_, coarse_res_;
 	int fine_size_, coarse_size_;
 	int hit_delta_, miss_delta_, occ_thresh_;

@@ -1,11 +1,27 @@
 <launch>
+	
+    <arg name="planner_config" value="$(find tinyhelm_core)/param/planner_asv.yaml"/>
 
-    <rosparam file="$(find tinyhelm_core)/param/config.yaml" command="load"/>
+    <rosparam file="$(find tinyhelm_core)/param/helm.yaml" command="load"/>
 
-    <include file="$(find tinyhelm_stationkeeping)/launch/stationkeeping.launch"/>
-    <include file="$(find tinyhelm_waypoints)/launch/asv.launch"/>
-
+    <!-- Controller Manager Node-->
     <node name="tinyhelm_core_node" pkg="tinyhelm_core" type="helm_core.py" output="screen"/>
+
+    <!-- Twist multiplexer, only the active controller can send velocity, teleop overrides immediately -->
     <node name="tinyhelm_cmd_vel_mux" pkg="tinyhelm_core" type="cmd_vel_mux" output="screen"/>
+
+    <!-- Controllers -->
+    <include file="$(find tinyhelm_waypoints)/launch/waypoints.launch">
+        <arg name="config_file" value="$(arg planner_config)"/>
+    </include>
+
+    <include file="$(find tinyhelm_stationkeeping)/launch/stationkeeping.launch">
+        <arg name="config_file" value="$(arg planner_config)"/>
+    </include>
+
+    <!-- Monitors 
+    <include file="$(find tinyhelm_obstacles)/launch/obstacles.launch">
+        <arg name="config_file" value="$(arg planner_config)"/>
+    </include>-->
 
 </launch>

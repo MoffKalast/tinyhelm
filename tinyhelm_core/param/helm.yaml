@@ -1,27 +1,28 @@
+robot_frame: base_link
+planning_frame: local
+
 tinyhelm_core:
 
-  robot_frame: base_link
-  planning_frame: local
-
+  home_topic: /tinyhelm/set_home      # PoseStamped, defines failsafe location, auto-sets when enabled unless ever set manually
   estop_topic: /tinyhelm/estop        # Trigger, stops immediately and goes to stationkeeping
   enabled_topic: /tinyhelm/enabled    # Bool, enables or disables the entire navigation stack
   markers_topic: /tinyhelm/markers    # MarkerArray, relay of currently active controller
 
   controllers:
     waypoints:
-      path: /move_base_simple/waypoints #Path
-      pose: /move_base_simple/goal      #PoseStamped
-      stop: /move_base_simple/clear     #Empty
-      cmd_vel: /cmd_vel_waypoints       #Twist
-      status: /line_planner/status     #Bool
-      markers: /line_planner/markers    #MarkerArray
+      path: /waypoints/_path        #Path
+      pose: /waypoints/_goal        #PoseStamped
+      stop: /waypoints/_clear       #Empty
+      cmd_vel: /cmd_vel_waypoints   #Twist
+      status: /waypoints/_status    #ControllerStatus
+      markers: /waypoints/_markers  #MarkerArray
 
     stationkeeping:
-      pose: /hold_position                      #PoseStamped
-      stop: /hold_position/clear                #Empty
-      cmd_vel: /cmd_vel_stationkeeping          #Twist
-      status: /stationkeeping/status            #ControllerStatus
-      markers: /stationkeeping/debug_markers    #MarkerArray
+      pose: /stationkeeping/_pose              #PoseStamped
+      stop: /stationkeeping/_clear             #Empty
+      cmd_vel: /cmd_vel_stationkeeping         #Twist
+      status: /stationkeeping/_status          #ControllerStatus
+      markers: /stationkeeping/_markers  #MarkerArray
 
   behaviour_topics:
     goal:

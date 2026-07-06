@@ -13,20 +13,21 @@ class ScanToCloudNode{
     laser_geometry::LaserProjection projector_;
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
-    std::string fixed_frame_;
+    std::string frame_;
     std::string scan_topic_;
     std::string cloud_topic_;
 
 public:
     ScanToCloudNode(ros::NodeHandle& nh, ros::NodeHandle& pnh): tf_buffer_(), tf_listener_(tf_buffer_){
-        pnh.param<std::string>("fixed_frame", fixed_frame_, "local");
+        pnh.param<std::string>("/frame", frame_, "local");
+        
         pnh.param<std::string>("scan_topic", scan_topic_, "/scan");
         pnh.param<std::string>("cloud_topic", cloud_topic_, "/cloud");
 
         scan_sub_ = nh.subscribe(scan_topic_, 10, &ScanToCloudNode::scanCallback, this);
         cloud_pub_ = nh.advertise<sensor_msgs::PointCloud2>(cloud_topic_, 10);
 
-        ROS_INFO("scan_to_cloud node started. Listening to %s, publishing %s in frame %s",scan_topic_.c_str(), cloud_topic_.c_str(), fixed_frame_.c_str());
+        ROS_INFO("scan_to_cloud node started. Listening to %s, publishing %s in frame %s",scan_topic_.c_str(), cloud_topic_.c_str(), frame_.c_str());
     }
 
 private:
@@ -37,7 +38,7 @@ private:
             projector_.projectLaser(*scan_msg, cloud);
 
             sensor_msgs::PointCloud2 cloud_out;
-            tf_buffer_.transform(cloud, cloud_out, fixed_frame_, ros::Duration(0.1));
+            tf_buffer_.transform(cloud, cloud_out, frame_, ros::Duration(0.1));
             cloud_pub_.publish(cloud_out);
         }catch (tf2::TransformException& ex){
             ROS_WARN_STREAM_THROTTLE(1.0, "Transform failed: " << ex.what());

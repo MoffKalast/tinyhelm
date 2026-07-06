@@ -23,8 +23,8 @@ class StationKeepingNode:
 	def __init__(self):
 		rospy.init_node("stationkeeping_node")
 
-		self.ROBOT_FRAME = rospy.get_param('~base_frame', 'base_link')
-		self.PLANNING_FRAME = rospy.get_param('~planning_frame', 'local')
+		self.ROBOT_FRAME = rospy.get_param('/robot_frame', 'base_link')
+		self.PLANNING_FRAME = rospy.get_param('/planning_frame', 'local')
 
 		self.MAX_LINEAR_SPD = rospy.get_param("~max_linear_speed", 0.45)
 		self.MAX_ANGULAR_SPD = rospy.get_param("~max_turning_speed", 0.9)
@@ -45,16 +45,16 @@ class StationKeepingNode:
 		self.tf2_listener = tf2_ros.TransformListener(self.tf2_buffer)
 
 		self.cmd_vel_pub = rospy.Publisher("/cmd_vel_stationkeeping", Twist, queue_size=1)
-		self.marker_pub = rospy.Publisher("/stationkeeping/debug_markers", MarkerArray, queue_size=1)
-		self.status_pub = rospy.Publisher("/stationkeeping/status", ControllerStatus, queue_size=1, latch=True)
+		self.marker_pub = rospy.Publisher("/stationkeeping/_markers", MarkerArray, queue_size=1)
+		self.status_pub = rospy.Publisher("/stationkeeping/_status", ControllerStatus, queue_size=1, latch=True)
 
-		self.goal_sub = rospy.Subscriber("/hold_position", PoseStamped, self.position_callback, queue_size=1)
+		self.goal_sub = rospy.Subscriber("/stationkeeping/_pose", PoseStamped, self.position_callback, queue_size=1)
 
-		self.estop_sub = rospy.Subscriber("/hold_position/clear", Empty, self.estop_callback)
+		self.estop_sub = rospy.Subscriber("/stationkeeping/_clear", Empty, self.estop_callback)
 
 		# Tracking enable and disable messages while publishing latched state
-		self.enabled_sub = rospy.Subscriber("/stationkeeping/enabled", Bool, self.enabled_callback)
-		self.enabled_pub = rospy.Publisher("/stationkeeping/enabled", Bool, queue_size=1, latch=True)
+		self.enabled_sub = rospy.Subscriber("/stationkeeping/_enabled", Bool, self.enabled_callback)
+		self.enabled_pub = rospy.Publisher("/stationkeeping/_enabled", Bool, queue_size=1, latch=True)
 		self.enabled_pub.publish(self.enabled)
 
 		# Dynamic reconfigure server

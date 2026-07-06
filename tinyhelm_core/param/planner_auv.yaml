@@ -1,0 +1,53 @@
+waypoints:
+    publish_debug_markers: true
+
+    # Any Z sent will be set to zero if true
+    ignore_altitude: true
+ 
+    max_linear_speed: 2.0
+    max_turning_speed: 3.0
+ 
+    # If robot_frame is this far from the line, the projected distance will be min and scale to max when it's on the line.
+    max_line_divergence: 4.0
+ 
+    # If any obstacles are defined then line divergence + robot width are used for finding a suitably wide path.
+    robot_width: 3.0
+
+    # The carrot is projected at least/most this far ahead. Reduce min distance and increase max distance for smoother, but less accurate following.
+    min_project_dist: 1.0
+    max_project_dist: 10.0
+
+    # Distance at which the goal is considered reached.
+    xy_distance_threshold: 4.0
+ 
+    # PID params for heading control.
+    P: 1.0
+    I: 0.005
+    D: 10.0
+ 
+    # If the robot frame is away from the line, the goal will be mirrored into the opposite direction and multiplied with this value.
+    side_offset_mult: 0.5
+ 
+    # Update rate, should be about the same as localization rate.
+    rate: 30
+ 
+area_to_path:
+    step_size: 5.0
+ 
+stationkeeping:
+    max_linear_speed: 1.0
+    max_turning_speed: 1.0
+ 
+    # The radius we intend to stay in
+    max_divergence: 3.0
+ 
+    # If any obstacles are defined then line divergence + robot width are used for finding a suitably wide path.
+    deadzone_fraction: 0.2
+ 
+    # PID params for heading control.
+    P: 3.0
+    I: 0.002
+    D: 65.0
+ 
+    # Update rate, should be about the same as localization rate.
+    rate: 30

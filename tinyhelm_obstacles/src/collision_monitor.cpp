@@ -13,7 +13,7 @@
 class CollisionMonitor {
 public:
 	CollisionMonitor(ros::NodeHandle& nh, ros::NodeHandle& pnh) : tf_listener_(tf_buffer_) {
-		pnh.param<std::string>("robot_frame", robot_frame_, "base_link");
+		pnh.param<std::string>("/robot_frame", robot_frame_, "base_link");
 		pnh.param("vessel_halfwidth", halfwidth_, 1.0);
 		pnh.param("margin", margin_, 2.0);
 		pnh.param("braking_horizon", horizon_, 3.0);
