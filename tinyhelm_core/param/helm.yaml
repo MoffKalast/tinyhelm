@@ -10,7 +10,7 @@ tinyhelm_core:
 
   controllers:
     waypoints:
-      path: /waypoints/_path        #Path
+      path: /tinyhelm/mission #/waypoints/_path        #Path
       pose: /waypoints/_goal        #PoseStamped
       stop: /waypoints/_clear       #Empty
       cmd_vel: /cmd_vel_waypoints   #Twist

@@ -19,7 +19,7 @@ class ScanToCloudNode{
 
 public:
     ScanToCloudNode(ros::NodeHandle& nh, ros::NodeHandle& pnh): tf_buffer_(), tf_listener_(tf_buffer_){
-        pnh.param<std::string>("/frame", frame_, "local");
+        pnh.param<std::string>("frame", frame_, "laser");
         
         pnh.param<std::string>("scan_topic", scan_topic_, "/scan");
         pnh.param<std::string>("cloud_topic", cloud_topic_, "/cloud");

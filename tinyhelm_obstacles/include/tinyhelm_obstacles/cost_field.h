@@ -4,6 +4,7 @@
 #include <queue>
 #include <cmath>
 #include <limits>
+#include <functional>
 #include "decay_grid.h"
 
 namespace tinyhelm {
@@ -31,10 +32,14 @@ public:
 	static constexpr float LETHAL = std::numeric_limits<float>::infinity();
 
 	void build(const DecayGrid& grid, double inflate_radius, double soft_radius, double soft_weight, const std::vector<Capsule>& geofence) {
-		res_ = grid.resolution();
-		size_ = grid.size();
-		origin_x_ = grid.originX();
-		origin_y_ = grid.originY();
+		build(grid.resolution(), grid.size(), grid.originX(), grid.originY(), [&grid](int x, int y) { return grid.occupied(x, y); }, inflate_radius, soft_radius, soft_weight, geofence);
+	}
+
+	void build(double resolution, int size, double origin_x, double origin_y, const std::function<bool(int, int)>& occupied, double inflate_radius, double soft_radius, double soft_weight, const std::vector<Capsule>& geofence) {
+		res_ = resolution;
+		size_ = size;
+		origin_x_ = origin_x;
+		origin_y_ = origin_y;
 		dist_.assign(size_ * size_, std::numeric_limits<float>::max());
 		fence_ok_.assign(size_ * size_, geofence.empty() ? 1 : 0);
 		inflate_ = inflate_radius;
@@ -44,7 +49,7 @@ public:
 		std::queue<int> frontier;
 		for (int y = 0; y < size_; y++) {
 			for (int x = 0; x < size_; x++) {
-				if (grid.occupied(x, y)) {
+				if (occupied(x, y)) {
 					dist_[y * size_ + x] = 0.0f;
 					frontier.push(y * size_ + x);
 				}

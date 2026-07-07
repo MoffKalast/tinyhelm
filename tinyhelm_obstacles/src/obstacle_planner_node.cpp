@@ -8,10 +8,9 @@
 #include <nav_msgs/Path.h>
 #include <nav_msgs/OccupancyGrid.h>
 #include <std_msgs/Empty.h>
-#include <std_msgs/UInt32.h>
 #include <tinyhelm_core/MonitorStatus.h>
 
-#include <tinyhelm_obstacles/decay_grid.h>
+#include <tinyhelm_obstacles/chunked_grid.h>
 #include <tinyhelm_obstacles/cost_field.h>
 #include <tinyhelm_obstacles/theta_star.h>
 
@@ -21,28 +20,30 @@
 using namespace tinyhelm;
 
 // Observes the strategic mission (/tinyhelm/mission) and the line planner's remaining
-// tactical path (/line_planner/plan), maintains a two-layer decaying obstacle grid, and when
-// the tactical corridor is intruded plans a detour with Theta* through the remaining
-// strategic waypoints. It never commands anything: it publishes a proposed path and a
-// MonitorStatus, and the helm core decides what to do with them.
+// tactical path, maintains a single chunked decaying obstacle grid, and when the tactical
+// corridor is intruded plans a detour with Theta* through the remaining strategic waypoints.
+// Planning runs on two views of the same data: a full-resolution CostField over the loaded
+// window around the vessel, and a coarse CostField rasterized on demand from the per-chunk
+// binary masks covering the whole mission. It never commands anything: it publishes a
+// proposed path and a MonitorStatus, and the helm core decides what to do with them.
 class ObstaclePlannerNode {
 public:
 	ObstaclePlannerNode(ros::NodeHandle& nh, ros::NodeHandle& pnh) : tf_listener_(tf_buffer_) {
 		pnh.param<std::string>("/planning_frame", planning_frame_, "local");
 		pnh.param<std::string>("/robot_frame", robot_frame_, "base_link");
-		
+
 		pnh.param<std::string>("tactical_plan_topic", tactical_plan_topic_, "/waypoints/_plan");
 		pnh.param<std::string>("divergence_param", divergence_param_, "/tinyhelm_waypoints_node/max_line_divergence");
 
-		pnh.param("fine_resolution", fine_res_, 0.25);
-		pnh.param("fine_size", fine_size_, 512);
-		pnh.param("coarse_resolution", coarse_res_, 1.0);
-		pnh.param("coarse_size", coarse_size_, 1024);
+		pnh.param("resolution", res_, 0.5);
+		pnh.param("chunk_size", chunk_size_, 32.0);
+		pnh.param("load_radius", load_radius_, 100.0);
+		pnh.param("mask_resolution", mask_res_, 2.0);
 
 		pnh.param("hit_delta", hit_delta_, 32);
 		pnh.param("miss_delta", miss_delta_, 12);
-		pnh.param("occupied_threshold", occ_thresh_, 48);
-		pnh.param("decay_half_life", half_life_, 60.0);
+		pnh.param("occupied_threshold", occ_thresh_, 70);
+		pnh.param("decay_half_life", half_life_, 300.0);
 
 		pnh.param("inflate_radius", inflate_radius_, 1.5);
 		pnh.param("soft_radius", soft_radius_, 5.0);
@@ -53,17 +54,17 @@ public:
 		pnh.param("max_detour", max_detour_, 200.0);
 		pnh.param("budget_factor", budget_k_, 3.0);
 
-		pnh.param("monitor_rate", monitor_rate_, 2.0);
+		pnh.param("monitor_rate", monitor_rate_, 10.0);
 		pnh.param("unreachable_cycles", unreachable_cycles_, 3);
 		pnh.param("waypoint_reached_radius", waypoint_reached_radius_, 6.0);
-		pnh.param("replan_cooldown", replan_cooldown_, 2.0);
+		pnh.param("replan_cooldown", replan_cooldown_, 0.5);
 		pnh.param("pose_jump_threshold", pose_jump_threshold_, 10.0);
-		pnh.param("grid_publish_period", grid_publish_period_, 1.0);
+		pnh.param("grid_publish_period", grid_publish_period_, 2.0);
 
-		fine_ = std::make_unique<DecayGrid>(fine_res_, fine_size_, (int8_t)hit_delta_, (int8_t)miss_delta_, (int8_t)occ_thresh_, half_life_);
-		coarse_ = std::make_unique<DecayGrid>(coarse_res_, coarse_size_, (int8_t)hit_delta_, (int8_t)miss_delta_, (int8_t)occ_thresh_, half_life_ * 2.0);
+		grid_ = std::make_unique<ChunkedGrid>(res_, chunk_size_, mask_res_, (int8_t)hit_delta_, (int8_t)miss_delta_, (int8_t)occ_thresh_, half_life_);
+		mask_res_ = grid_->maskResolution();
 
-		hits_sub_ = nh.subscribe("/obstacle_cloud/add", 5, &ObstaclePlannerNode::hitsCallback, this);
+		hits_sub_ = nh.subscribe("/obstacle_cloud", 5, &ObstaclePlannerNode::hitsCallback, this);
 		clear_sub_ = nh.subscribe("/obstacle_cloud/clear", 5, &ObstaclePlannerNode::clearCellsCallback, this);
 		static_poly_sub_ = nh.subscribe("/obstacle_grid/add_polygon", 5, &ObstaclePlannerNode::staticPolygonCallback, this);
 		grid_clear_sub_ = nh.subscribe("/obstacle_grid/clear", 1, &ObstaclePlannerNode::gridClearCallback, this);
@@ -73,13 +74,13 @@ public:
 		path_pub_ = nh.advertise<nav_msgs::Path>("/obstacle_planner/path", 1, true);
 		remaining_pub_ = nh.advertise<nav_msgs::Path>("/obstacle_planner/remaining", 1, true);
 		status_pub_ = nh.advertise<tinyhelm_core::MonitorStatus>("/tinyhelm/monitor/obstacles", 5, true);
-		fine_grid_pub_ = nh.advertise<nav_msgs::OccupancyGrid>("/obstacle_planner/grid_fine", 1, true);
-		coarse_grid_pub_ = nh.advertise<nav_msgs::OccupancyGrid>("/obstacle_planner/grid_coarse", 1, true);
+		local_grid_pub_ = nh.advertise<nav_msgs::OccupancyGrid>("/obstacle_planner/grid_local", 1, true);
+		mask_grid_pub_ = nh.advertise<nav_msgs::OccupancyGrid>("/obstacle_planner/grid_mask", 1, true);
 
 		timer_ = nh.createTimer(ros::Duration(1.0 / monitor_rate_), &ObstaclePlannerNode::tick, this);
 		last_grid_publish_ = ros::Time(0);
 		last_replan_ = ros::Time(0);
-		ROS_INFO("obstacle_planner: fine %.2fm x %d, coarse %.2fm x %d, frame %s", fine_res_, fine_size_, coarse_res_, coarse_size_, planning_frame_.c_str());
+		ROS_INFO("obstacle_planner: res %.2fm, chunks %.0fm, load radius %.0fm, mask %.1fm, frame %s", res_, chunk_size_, load_radius_, mask_res_, planning_frame_.c_str());
 	}
 
 private:
@@ -100,35 +101,23 @@ private:
 			cloud = *msg;
 		}
 
+		double now = ros::Time::now().toSec();
 		sensor_msgs::PointCloud2ConstIterator<float> ix(cloud, "x"), iy(cloud, "y");
 		for (; ix != ix.end(); ++ix, ++iy) {
-			if (hits) {
-				fine_->addHit(*ix, *iy);
-				coarse_->addHit(*ix, *iy);
-			} else {
-				fine_->addMiss(*ix, *iy);
-				coarse_->addMiss(*ix, *iy);
-			}
+			if (hits) grid_->addHit(*ix, *iy, now); else grid_->addMiss(*ix, *iy, now);
 		}
-		grids_dirty_ = true;
 	}
 
 	void staticPolygonCallback(const geometry_msgs::PolygonStamped::ConstPtr& msg) {
 		if (msg->polygon.points.size() < 3) return;
-		rasterizeStatic(*fine_, msg->polygon);
-		rasterizeStatic(*coarse_, msg->polygon);
-		grids_dirty_ = true;
-	}
-
-	void rasterizeStatic(DecayGrid& grid, const geometry_msgs::Polygon& poly) {
 		double minx = 1e18, miny = 1e18, maxx = -1e18, maxy = -1e18;
-		for (const auto& p : poly.points) {
+		for (const auto& p : msg->polygon.points) {
 			minx = std::min(minx, (double)p.x); maxx = std::max(maxx, (double)p.x);
 			miny = std::min(miny, (double)p.y); maxy = std::max(maxy, (double)p.y);
 		}
-		for (double y = miny; y <= maxy; y += grid.resolution()) {
-			for (double x = minx; x <= maxx; x += grid.resolution()) {
-				if (pointInPolygon(x, y, poly)) grid.setStatic(x, y, true);
+		for (double y = miny; y <= maxy; y += res_) {
+			for (double x = minx; x <= maxx; x += res_) {
+				if (pointInPolygon(x, y, msg->polygon)) grid_->setStatic(x, y, true);
 			}
 		}
 	}
@@ -144,10 +133,8 @@ private:
 	}
 
 	void gridClearCallback(const std_msgs::Empty::ConstPtr&) {
-		fine_->clear();
-		coarse_->clear();
-		grids_dirty_ = true;
-		ROS_INFO("obstacle_planner: grids cleared by request");
+		grid_->clear();
+		ROS_INFO("obstacle_planner: grid cleared by request");
 	}
 
 	void missionCallback(const nav_msgs::Path::ConstPtr& msg) {
@@ -156,7 +143,7 @@ private:
 		unreachable_counts_.clear();
 		last_published_.clear();
 		blocked_ = false;
-		if (mission_.poses.empty()) publishStatus(tinyhelm_core::MonitorStatus::OK, "CLEAR", "", "No active mission.");
+		if (mission_.poses.empty()) publishStatus(tinyhelm_core::MonitorStatus::OK, "No active mission.");
 	}
 
 	void tacticalCallback(const nav_msgs::Path::ConstPtr& msg) { tactical_ = *msg; }
@@ -186,30 +173,22 @@ private:
 	}
 
 	void tick(const ros::TimerEvent& ev) {
-		double dt = last_tick_.isZero() ? 1.0 / monitor_rate_ : (ev.current_real - last_tick_).toSec();
-		last_tick_ = ev.current_real;
-
 		double rx, ry;
 		if (!getRobotPose(rx, ry)) return;
 
 		if (have_last_pose_ && std::hypot(rx - last_rx_, ry - last_ry_) > pose_jump_threshold_) {
-			ROS_WARN("obstacle_planner: pose jumped %.1fm, assuming ENU reset and clearing grids", std::hypot(rx - last_rx_, ry - last_ry_));
-			fine_->clear();
-			coarse_->clear();
-			grids_dirty_ = true;
+			ROS_WARN("obstacle_planner: pose jumped %.1fm, assuming ENU reset and clearing grid", std::hypot(rx - last_rx_, ry - last_ry_));
+			grid_->clear();
 		}
 		last_rx_ = rx;
 		last_ry_ = ry;
 		have_last_pose_ = true;
 
-		fine_->recenter(rx, ry, coarse_.get());
-		coarse_->recenter(rx, ry, nullptr);
-		fine_->decay(dt);
-		coarse_->decay(dt);
+		grid_->maintain(rx, ry, load_radius_, ev.current_real.toSec());
 
 		if ((ev.current_real - last_grid_publish_).toSec() >= grid_publish_period_) {
-			publishGrid(*fine_, fine_grid_pub_);
-			publishGrid(*coarse_, coarse_grid_pub_);
+			publishLocalGrid(rx, ry);
+			publishMaskGrid(rx, ry);
 			last_grid_publish_ = ev.current_real;
 		}
 
@@ -227,17 +206,15 @@ private:
 		ros::param::getCached(divergence_param_, corridor);
 		effective_inflate_ = inflate_radius_ + corridor;
 
-		std::vector<Capsule> fence = buildGeofence(rx, ry);
-		fine_field_.build(*fine_, effective_inflate_, soft_radius_, soft_weight_, fence);
-		coarse_field_.build(*coarse_, effective_inflate_, soft_radius_, soft_weight_, fence);
-		grids_dirty_ = false;
+		fence_ = buildGeofence(rx, ry);
+		buildLocalField(rx, ry);
 
 		bool path_clear = tactical_.poses.size() >= 2 && corridorClear();
 
 		if (path_clear) {
 			if (blocked_) ROS_INFO("obstacle_planner: corridor clear again");
 			blocked_ = false;
-			publishStatus(tinyhelm_core::MonitorStatus::OK, "CLEAR", "", "Corridor clear.");
+			publishStatus(tinyhelm_core::MonitorStatus::OK, "Corridor clear.");
 			return;
 		}
 
@@ -245,6 +222,31 @@ private:
 		if ((ev.current_real - last_replan_).toSec() < replan_cooldown_) return;
 		last_replan_ = ev.current_real;
 		replan(rx, ry);
+	}
+
+	void buildLocalField(double rx, double ry) {
+		int size = (int)std::ceil(2.0 * load_radius_ / res_);
+		double ox = std::floor((rx - load_radius_) / res_) * res_;
+		double oy = std::floor((ry - load_radius_) / res_) * res_;
+		auto occ = [this, ox, oy](int x, int y) { return grid_->occupiedAt(ox + (x + 0.5) * res_, oy + (y + 0.5) * res_); };
+		local_field_.build(res_, size, ox, oy, occ, effective_inflate_, soft_radius_, soft_weight_, fence_);
+	}
+
+	// Coarse field over the whole remaining mission, rasterized from the chunk masks (and
+	// live chunks inside the load radius) so global planning never leaves known-clear space
+	void buildMaskField(double rx, double ry) {
+		double minx = rx, maxx = rx, miny = ry, maxy = ry;
+		for (const auto& wp : remaining_) {
+			minx = std::min(minx, wp.pose.position.x); maxx = std::max(maxx, wp.pose.position.x);
+			miny = std::min(miny, wp.pose.position.y); maxy = std::max(maxy, wp.pose.position.y);
+		}
+		double margin = max_detour_ + 2.0 * mask_res_;
+		double extent = std::max(maxx - minx, maxy - miny) + 2.0 * margin;
+		int size = (int)std::ceil(extent / mask_res_);
+		double ox = std::floor((0.5 * (minx + maxx) - 0.5 * extent) / mask_res_) * mask_res_;
+		double oy = std::floor((0.5 * (miny + maxy) - 0.5 * extent) / mask_res_) * mask_res_;
+		auto occ = [this, ox, oy](int x, int y) { return grid_->occupiedCoarseAt(ox + (x + 0.5) * mask_res_, oy + (y + 0.5) * mask_res_); };
+		mask_field_.build(mask_res_, size, ox, oy, occ, effective_inflate_, std::max(soft_radius_, 2.0 * mask_res_), soft_weight_, fence_);
 	}
 
 	std::vector<Capsule> buildGeofence(double rx, double ry) {
@@ -266,14 +268,14 @@ private:
 			double x1 = tactical_.poses[i - 1].pose.position.x, y1 = tactical_.poses[i - 1].pose.position.y;
 			double x2 = tactical_.poses[i].pose.position.x, y2 = tactical_.poses[i].pose.position.y;
 			double len = std::hypot(x2 - x1, y2 - y1);
-			int steps = std::max(1, (int)(len / (fine_res_ * 2.0)));
+			int steps = std::max(1, (int)(len / (res_ * 2.0)));
 			for (int s = 0; s <= steps; s++) {
 				double t = (double)s / steps;
 				double x = x1 + t * (x2 - x1), y = y1 + t * (y2 - y1);
 				int cx, cy;
-				if (fine_field_.worldToCell(x, y, cx, cy)) {
-					if (fine_field_.obstacleDistance(cx, cy) < effective_inflate_ - fine_res_) return false;
-				} else if (coarse_field_.obstacleDistanceAt(x, y) < effective_inflate_ - coarse_res_) {
+				if (local_field_.worldToCell(x, y, cx, cy)) {
+					if (local_field_.obstacleDistance(cx, cy) < effective_inflate_ - res_) return false;
+				} else if (grid_->occupiedCoarseNear(x, y, effective_inflate_)) {
 					return false;
 				}
 			}
@@ -283,13 +285,13 @@ private:
 
 	bool pointLethal(double x, double y) {
 		int cx, cy;
-		if (fine_field_.worldToCell(x, y, cx, cy)) return fine_field_.lethal(cx, cy);
-		return coarse_field_.lethalAt(x, y);
+		if (local_field_.worldToCell(x, y, cx, cy)) return local_field_.lethal(cx, cy);
+		return mask_field_.lethalAt(x, y);
 	}
 
 	bool lineClear(const PlanPoint& a, const PlanPoint& b) {
 		double len = std::hypot(b.x - a.x, b.y - a.y);
-		int steps = std::max(1, (int)(len / (fine_res_ * 2.0)));
+		int steps = std::max(1, (int)(len / (res_ * 2.0)));
 		for (int s = 1; s < steps; s++) {
 			double t = (double)s / steps;
 			if (pointLethal(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y))) return false;
@@ -299,7 +301,7 @@ private:
 
 	// Theta* style string pulling over a stitched leg: greedily link each point to the
 	// furthest point it has line of sight to, dropping everything in between. Fixes the
-	// fine/coarse splice and coarse grid discretization into one taut segment chain.
+	// local/mask splice and mask discretization into one taut segment chain.
 	std::vector<PlanPoint> smoothLeg(const std::vector<PlanPoint>& leg) {
 		if (leg.size() <= 2) return leg;
 		std::vector<PlanPoint> out;
@@ -332,102 +334,73 @@ private:
 	}
 
 	void replan(double rx, double ry) {
+		buildMaskField(rx, ry);
+
 		nav_msgs::Path out;
 		out.header.frame_id = planning_frame_;
 		out.header.stamp = ros::Time::now();
 
 		double px = rx, py = ry;
-		bool beyond_horizon = false;
 		for (size_t wi = 0; wi < remaining_.size(); wi++) {
 			double gx = remaining_[wi].pose.position.x, gy = remaining_[wi].pose.position.y;
 
-			if (beyond_horizon) {
-				out.poses.push_back(remaining_[wi]);
-				continue;
-			}
-
-			double clip_x = gx, clip_y = gy;
-			bool clipped = clipToField(coarse_field_, px, py, clip_x, clip_y);
-
-			if (!clipped && coarse_field_.lethalAt(gx, gy)) {
+			if (mask_field_.lethalAt(gx, gy)) {
 				if (bumpUnreachable(wi)) return;
-				publishStatus(tinyhelm_core::MonitorStatus::BLOCKED, "PATH_BLOCKED", std::to_string(strategicIndex(wi)), "Waypoint occupied, confirming...");
+				publishStatus(tinyhelm_core::MonitorStatus::WARN, "Waypoint " + std::to_string(strategicIndex(wi)) + " occupied, confirming...");
 				return;
 			}
 
-			std::vector<PlanPoint> leg = planLeg(px, py, clip_x, clip_y);
+			std::vector<PlanPoint> leg = planLeg(px, py, gx, gy);
 			if (leg.empty()) {
 				if (bumpUnreachable(wi)) return;
-				publishStatus(tinyhelm_core::MonitorStatus::BLOCKED, "PATH_BLOCKED", std::to_string(strategicIndex(wi)), "No path within geofence.");
+				publishStatus(tinyhelm_core::MonitorStatus::WARN, "No path within geofence to waypoint " + std::to_string(strategicIndex(wi)) + ".");
 				return;
 			}
 
-			double direct = std::hypot(clip_x - px, clip_y - py);
-			if (direct > coarse_res_ && ThetaStar::pathLength(leg) > budget_k_ * direct) {
+			double direct = std::hypot(gx - px, gy - py);
+			if (direct > mask_res_ && ThetaStar::pathLength(leg) > budget_k_ * direct) {
 				if (bumpUnreachable(wi)) return;
-				publishStatus(tinyhelm_core::MonitorStatus::BLOCKED, "PATH_BLOCKED", std::to_string(strategicIndex(wi)), "Detour exceeds budget.");
+				publishStatus(tinyhelm_core::MonitorStatus::WARN, "Detour to waypoint " + std::to_string(strategicIndex(wi)) + " exceeds budget.");
 				return;
 			}
 
 			leg = smoothLeg(leg);
 			for (size_t i = (out.poses.empty() ? 0 : 1); i < leg.size(); i++) out.poses.push_back(makePose(leg[i].x, leg[i].y, remaining_[wi].pose.position.z));
 
-			if (clipped) {
-				beyond_horizon = true;
-				out.poses.push_back(remaining_[wi]);
-			} else {
-				out.poses.back() = remaining_[wi];
-				unreachable_counts_.erase(strategicIndex(wi));
-			}
+			out.poses.back() = remaining_[wi];
+			unreachable_counts_.erase(strategicIndex(wi));
 			px = gx;
 			py = gy;
 		}
 
 		if (pathsSimilar(out.poses, last_published_)) {
-			publishStatus(tinyhelm_core::MonitorStatus::WARN, "REPLAN_READY", "", "Detour available (unchanged).");
+			publishStatus(tinyhelm_core::MonitorStatus::REPLAN, "Detour available (unchanged).");
 			return;
 		}
 		last_published_ = out.poses;
 		path_pub_.publish(out);
-		publishStatus(tinyhelm_core::MonitorStatus::WARN, "REPLAN_READY", "", "Detour planned around obstacles.");
+		publishStatus(tinyhelm_core::MonitorStatus::REPLAN, "Detour planned around obstacles.");
 		ROS_INFO("obstacle_planner: replanned %zu poses through %zu waypoints", out.poses.size(), remaining_.size());
 	}
 
-	// Plan on the coarse field, then re-refine the portion inside the fine extent on the fine field
+	// Plan on the mask field, then re-refine the portion inside the local window at full res
 	std::vector<PlanPoint> planLeg(double sx, double sy, double gx, double gy) {
-		std::vector<PlanPoint> coarse_path = planner_.plan(coarse_field_, sx, sy, gx, gy);
+		std::vector<PlanPoint> coarse_path = planner_.plan(mask_field_, sx, sy, gx, gy);
 		if (coarse_path.empty()) return coarse_path;
 
 		size_t split = 0;
 		for (size_t i = 0; i < coarse_path.size(); i++) {
 			int cx, cy;
-			if (!fine_field_.worldToCell(coarse_path[i].x, coarse_path[i].y, cx, cy)) break;
+			if (!local_field_.worldToCell(coarse_path[i].x, coarse_path[i].y, cx, cy)) break;
 			split = i;
 		}
 		if (split < 1) return coarse_path;
 
-		std::vector<PlanPoint> fine_path = planner_.plan(fine_field_, sx, sy, coarse_path[split].x, coarse_path[split].y);
+		std::vector<PlanPoint> fine_path = planner_.plan(local_field_, sx, sy, coarse_path[split].x, coarse_path[split].y);
 		if (fine_path.empty()) return coarse_path;
 
 		fine_path.insert(fine_path.end(), coarse_path.begin() + split + 1, coarse_path.end());
 		return fine_path;
-	}
-
-	// If the goal lies outside the coarse field, pull it back along the segment to just inside;
-	// beyond the horizon we assume free water and pass the remaining waypoints through untouched
-	bool clipToField(const CostField& field, double sx, double sy, double& gx, double& gy) {
-		int cx, cy;
-		if (field.worldToCell(gx, gy, cx, cy)) return false;
-		double lo = 0.0, hi = 1.0;
-		for (int i = 0; i < 24; i++) {
-			double mid = 0.5 * (lo + hi);
-			double x = sx + mid * (gx - sx), y = sy + mid * (gy - sy);
-			if (field.worldToCell(x, y, cx, cy)) lo = mid; else hi = mid;
-		}
-		double t = std::max(0.0, lo - 0.02);
-		gx = sx + t * (gx - sx);
-		gy = sy + t * (gy - sy);
-		return true;
 	}
 
 	int strategicIndex(size_t remaining_index) { return (int)(next_wp_index_ + remaining_index); }
@@ -436,7 +409,7 @@ private:
 	bool bumpUnreachable(size_t remaining_index) {
 		int si = strategicIndex(remaining_index);
 		if (++unreachable_counts_[si] < unreachable_cycles_) return false;
-		publishStatus(tinyhelm_core::MonitorStatus::BLOCKED, "WAYPOINT_UNREACHABLE", std::to_string(si), "Waypoint unreachable after repeated attempts.");
+		publishStatus(tinyhelm_core::MonitorStatus::OBSERVED_ERROR, "Waypoint " + std::to_string(si) + " unreachable after repeated attempts.");
 		return true;
 	}
 
@@ -450,51 +423,72 @@ private:
 		return p;
 	}
 
-	void publishStatus(uint8_t level, const std::string& code, const std::string& data, const std::string& message) {
+	void publishStatus(int8_t status, const std::string& message) {
 		tinyhelm_core::MonitorStatus msg;
-		msg.header.stamp = ros::Time::now();
-		msg.name = "obstacles";
-		msg.level = level;
-		msg.code = code;
-		msg.data = data;
-		msg.mission_stamp = mission_.header.stamp;
+		msg.status = status;
 		msg.message = message;
 		status_pub_.publish(msg);
 	}
 
-	void publishGrid(const DecayGrid& grid, ros::Publisher& pub) {
-		if (pub.getNumSubscribers() == 0) return;
+	void publishLocalGrid(double rx, double ry) {
+		if (local_grid_pub_.getNumSubscribers() == 0) return;
+		int size = (int)std::ceil(2.0 * load_radius_ / res_);
+		double ox = std::floor((rx - load_radius_) / res_) * res_;
+		double oy = std::floor((ry - load_radius_) / res_) * res_;
 		nav_msgs::OccupancyGrid msg;
 		msg.header.frame_id = planning_frame_;
 		msg.header.stamp = ros::Time::now();
-		msg.info.resolution = grid.resolution();
-		msg.info.width = msg.info.height = grid.size();
-		msg.info.origin.position.x = grid.originX();
-		msg.info.origin.position.y = grid.originY();
+		msg.info.resolution = res_;
+		msg.info.width = msg.info.height = size;
+		msg.info.origin.position.x = ox;
+		msg.info.origin.position.y = oy;
 		msg.info.origin.orientation.w = 1.0;
-		msg.data.resize(grid.size() * grid.size());
-		for (int y = 0; y < grid.size(); y++) {
-			for (int x = 0; x < grid.size(); x++) {
-				int8_t v = grid.at(x, y);
-				int8_t& out = msg.data[y * grid.size() + x];
-				if (grid.isStatic(x, y) || v >= grid.occupiedThreshold()) out = 100;
-				else if (v > 0) out = (int8_t)std::max(1, std::min(98, (int)v * 98 / grid.occupiedThreshold()));
+		msg.data.resize(size * size);
+		for (int y = 0; y < size; y++) {
+			for (int x = 0; x < size; x++) {
+				double wx = ox + (x + 0.5) * res_, wy = oy + (y + 0.5) * res_;
+				int8_t v = grid_->at(wx, wy);
+				int8_t& out = msg.data[y * size + x];
+				if (grid_->isStatic(wx, wy) || v >= grid_->occupiedThreshold()) out = 100;
+				else if (v > 0) out = (int8_t)std::max(1, std::min(98, (int)v * 98 / grid_->occupiedThreshold()));
 				else if (v < 0) out = 0;
 				else out = -1;
 			}
 		}
-		pub.publish(msg);
+		local_grid_pub_.publish(msg);
+	}
+
+	void publishMaskGrid(double rx, double ry) {
+		if (mask_grid_pub_.getNumSubscribers() == 0) return;
+		double half = std::max(load_radius_ * 4.0, max_detour_ * 2.0);
+		int size = (int)std::ceil(2.0 * half / mask_res_);
+		double ox = std::floor((rx - half) / mask_res_) * mask_res_;
+		double oy = std::floor((ry - half) / mask_res_) * mask_res_;
+		nav_msgs::OccupancyGrid msg;
+		msg.header.frame_id = planning_frame_;
+		msg.header.stamp = ros::Time::now();
+		msg.info.resolution = mask_res_;
+		msg.info.width = msg.info.height = size;
+		msg.info.origin.position.x = ox;
+		msg.info.origin.position.y = oy;
+		msg.info.origin.orientation.w = 1.0;
+		msg.data.resize(size * size, 0);
+		for (int y = 0; y < size; y++) {
+			for (int x = 0; x < size; x++) {
+				if (grid_->occupiedCoarseAt(ox + (x + 0.5) * mask_res_, oy + (y + 0.5) * mask_res_)) msg.data[y * size + x] = 100;
+			}
+		}
+		mask_grid_pub_.publish(msg);
 	}
 
 	tf2_ros::Buffer tf_buffer_;
 	tf2_ros::TransformListener tf_listener_;
 	ros::Subscriber hits_sub_, clear_sub_, static_poly_sub_, grid_clear_sub_, mission_sub_, tactical_sub_;
-	ros::Publisher path_pub_, remaining_pub_, status_pub_, fine_grid_pub_, coarse_grid_pub_;
+	ros::Publisher path_pub_, remaining_pub_, status_pub_, local_grid_pub_, mask_grid_pub_;
 	ros::Timer timer_;
 
 	std::string planning_frame_, robot_frame_, tactical_plan_topic_, divergence_param_;
-	double fine_res_, coarse_res_;
-	int fine_size_, coarse_size_;
+	double res_, chunk_size_, load_radius_, mask_res_;
 	int hit_delta_, miss_delta_, occ_thresh_;
 	double half_life_, inflate_radius_, soft_radius_, soft_weight_, effective_inflate_ = 0.0;
 	std::vector<geometry_msgs::PoseStamped> last_published_;
@@ -502,8 +496,9 @@ private:
 	double monitor_rate_, replan_cooldown_, pose_jump_threshold_, grid_publish_period_;
 	int unreachable_cycles_;
 
-	std::unique_ptr<DecayGrid> fine_, coarse_;
-	CostField fine_field_, coarse_field_;
+	std::unique_ptr<ChunkedGrid> grid_;
+	CostField local_field_, mask_field_;
+	std::vector<Capsule> fence_;
 	ThetaStar planner_;
 
 	nav_msgs::Path mission_, tactical_;
@@ -511,9 +506,9 @@ private:
 	size_t next_wp_index_ = 0;
 	double waypoint_reached_radius_ = 6.0;
 	std::map<int, int> unreachable_counts_;
-	bool blocked_ = false, grids_dirty_ = false, have_last_pose_ = false;
+	bool blocked_ = false, have_last_pose_ = false;
 	double last_rx_ = 0.0, last_ry_ = 0.0;
-	ros::Time last_tick_, last_grid_publish_, last_replan_;
+	ros::Time last_grid_publish_, last_replan_;
 };
 
 int main(int argc, char** argv) {

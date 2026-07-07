@@ -20,7 +20,7 @@ public:
 		pnh.param("min_points", min_points_, 2);
 		pnh.param("heartbeat_period", heartbeat_period_, 1.0);
 
-		cloud_sub_ = nh.subscribe("/obstacle_cloud/add", 5, &CollisionMonitor::cloudCallback, this);
+		cloud_sub_ = nh.subscribe("/obstacle_cloud", 5, &CollisionMonitor::cloudCallback, this);
 		cmd_sub_ = nh.subscribe("/cmd_vel", 5, &CollisionMonitor::cmdCallback, this);
 		status_pub_ = nh.advertise<tinyhelm_core::MonitorStatus>("/tinyhelm/monitor/collision", 5);
 		heartbeat_timer_ = nh.createTimer(ros::Duration(heartbeat_period_), &CollisionMonitor::heartbeat, this);
@@ -48,22 +48,18 @@ private:
 		}
 
 		if (intruders >= min_points_) {
-			publish(tinyhelm_core::MonitorStatus::EMERGENCY, "COLLISION_IMMINENT", std::to_string(intruders), "Obstacle inside stop zone.");
+			publish(tinyhelm_core::MonitorStatus::ESTOP, "Obstacle inside stop zone (" + std::to_string(intruders) + " points).");
 			last_emergency_ = ros::Time::now();
 		}
 	}
 
 	void heartbeat(const ros::TimerEvent&) {
-		if ((ros::Time::now() - last_emergency_).toSec() > heartbeat_period_) publish(tinyhelm_core::MonitorStatus::OK, "CLEAR", "", "Stop zone clear.");
+		if ((ros::Time::now() - last_emergency_).toSec() > heartbeat_period_) publish(tinyhelm_core::MonitorStatus::OK, "Stop zone clear.");
 	}
 
-	void publish(uint8_t level, const std::string& code, const std::string& data, const std::string& message) {
+	void publish(int8_t status, const std::string& message) {
 		tinyhelm_core::MonitorStatus msg;
-		msg.header.stamp = ros::Time::now();
-		msg.name = "collision";
-		msg.level = level;
-		msg.code = code;
-		msg.data = data;
+		msg.status = status;
 		msg.message = message;
 		status_pub_.publish(msg);
 	}
