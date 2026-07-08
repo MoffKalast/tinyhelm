@@ -19,9 +19,9 @@
         <arg name="config_file" value="$(arg planner_config)"/>
     </include>
 
-    <!-- Monitors 
+    <!-- Monitors -->
     <include file="$(find tinyhelm_obstacles)/launch/obstacles.launch">
         <arg name="config_file" value="$(arg planner_config)"/>
-    </include>-->
+    </include>
 
 </launch>

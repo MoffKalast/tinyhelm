@@ -26,10 +26,8 @@
 		<param name="budget_factor" value="3.0"/>
 
 		<param name="monitor_rate" value="10.0"/>
-		<param name="replan_cooldown" value="0"/>
 		<param name="grid_publish_period" value="1.0"/>
 
-		<remap from="/obstacle_planner/path" to="/waypoints/_path"/>
 	</node>
 
 	<node name="collision_monitor" pkg="tinyhelm_obstacles" type="collision_monitor" output="screen">

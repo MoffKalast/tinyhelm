@@ -10,7 +10,8 @@ tinyhelm_core:
 
   controllers:
     waypoints:
-      path: /tinyhelm/mission #/waypoints/_path        #Path
+      path: /waypoints/_path        #Path
+      revise: /waypoints/_revise    #Path, revised plan: first pose is the line anchor, not a goal
       pose: /waypoints/_goal        #PoseStamped
       stop: /waypoints/_clear       #Empty
       cmd_vel: /cmd_vel_waypoints   #Twist
@@ -23,6 +24,13 @@ tinyhelm_core:
       cmd_vel: /cmd_vel_stationkeeping         #Twist
       status: /stationkeeping/_status          #ControllerStatus
       markers: /stationkeeping/_markers  #MarkerArray
+
+  monitors:
+    obstacles:
+      mission: /tinyhelm/mission                #Path (out), mirror of the active strategic plan
+      correction: /obstacle_planner/path        #Path (in), proposed corrected course
+      status: /tinyhelm/monitor/obstacles       #MonitorStatus
+      #markers:                                 #MarkerArray, none published yet
 
   behaviour_topics:
     goal:

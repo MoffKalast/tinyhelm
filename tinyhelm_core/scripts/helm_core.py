@@ -17,9 +17,10 @@ from geometry_msgs.msg import PoseStamped
 from visualization_msgs.msg import MarkerArray, Marker
 
 from behaviours import Behaviours, StateAction, Intention
+from monitors import Monitors, MonitorAction, MONITOR_STATUS_NAMES
 from config_loader import ConfigLoader
 
-from tinyhelm_core.msg import ControllerStatus
+from tinyhelm_core.msg import ControllerStatus, MonitorStatus
 
 from util import get_pose_in_frame
 
@@ -72,6 +73,7 @@ class HelmCore:
 
 		self.controllers = self.cfg_loader.parse_controllers(self.controller_status_callback, self.markers_callback)
 		self.behaviours = self.cfg_loader.parse_behaviours(self.behaviour_callback)
+		self.monitors = self.cfg_loader.parse_monitors(self.monitor_status_callback, self.monitor_correction_callback)
 
 		self.estop_sub = rospy.Subscriber(self.estop_topic, Empty, self.estop_callback, queue_size=1)
 		self.teleop_override_sub = rospy.Subscriber("/teleop_override_active", Bool, self.teleop_override, queue_size=1)
@@ -121,6 +123,7 @@ class HelmCore:
 				self.set_cmd_vel_mux("")
 				self.stop_controller(self.active_controller)
 				self.active_controller = None
+				self.publish_mission(Path())
 
 	def stop_controller(self, controller: str):
 			if controller == self.active_controller:
@@ -206,6 +209,55 @@ class HelmCore:
 		}
 		self.active_controller = controller_name
 		self.set_cmd_vel_mux(controller_name)
+		self.publish_mission(intention.plan)
+
+	def publish_mission(self, plan):
+		"""Mirrors the active strategic plan to all monitors; an empty Path means nothing to watch."""
+		msg = plan if isinstance(plan, Path) else Path()
+		for m in self.monitors.values():
+			m['revision_pending'] = False
+			m['last_correction'] = None
+			if m.get('mission_pub'):
+				m['mission_pub'].publish(msg)
+
+	def monitor_correction_callback(self, monitor_name: str, msg: Path):
+		if monitor_name not in self.monitors:
+			return
+		self.monitors[monitor_name]['last_correction'] = msg
+		# the REPLAN status can outrun its correction across topics; fulfill the request now
+		if self.monitors[monitor_name].get('revision_pending'):
+			self.revise_plan(monitor_name)
+
+	def monitor_status_callback(self, monitor_name: str, msg: MonitorStatus):
+		rospy.loginfo_throttle(5.0, f"Monitor {monitor_name} reports: {MONITOR_STATUS_NAMES.get(msg.status, '???')} - {msg.message}")
+
+		if not self.enabled:
+			return
+
+		action = Monitors.action_for(msg.status)
+
+		if action == MonitorAction.REVISE_PLAN:
+			self.revise_plan(monitor_name)
+		elif action == MonitorAction.STATIONKEEPING:
+			rospy.logwarn(f"Monitor {monitor_name} demands a stop! Transitioning to stationkeeping.")
+			self.behaviour_callback('stationkeeping', None)
+
+	def revise_plan(self, monitor_name: str):
+		correction = self.monitors[monitor_name].get('last_correction')
+		if correction is None or len(correction.poses) < 2:
+			self.monitors[monitor_name]['revision_pending'] = True
+			return
+
+		controller = self.controllers.get(self.active_controller, {})
+		revise_pub = controller.get('revise_pub')
+		if not revise_pub:
+			rospy.logwarn_throttle(5.0, f"Monitor {monitor_name} proposed a revision but the active controller cannot accept one.")
+			return
+
+		revise_pub.publish(correction)
+		# consume it so a repeated REPLAN status doesn't re-send an identical revision
+		self.monitors[monitor_name]['last_correction'] = None
+		self.monitors[monitor_name]['revision_pending'] = False
 
 	def controller_status_callback(self, controller_name: str, msg: ControllerStatus):
 		rospy.loginfo(f"Controller {controller_name} reports: {STATUS_NAMES.get(msg.status, '???')} - {msg.message}")

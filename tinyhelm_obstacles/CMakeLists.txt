@@ -13,12 +13,13 @@ find_package(catkin REQUIRED COMPONENTS
   laser_geometry
   tf2_ros
   tf2_sensor_msgs
+  tf2_geometry_msgs
   tinyhelm_core
 )
 
 catkin_package(
   INCLUDE_DIRS include
-  CATKIN_DEPENDS roscpp geometry_msgs dynamic_reconfigure rospy move_base_msgs nav_msgs sensor_msgs std_msgs laser_geometry tf2_ros tf2_sensor_msgs tinyhelm_core
+  CATKIN_DEPENDS roscpp geometry_msgs dynamic_reconfigure rospy move_base_msgs nav_msgs sensor_msgs std_msgs laser_geometry tf2_ros tf2_sensor_msgs tf2_geometry_msgs tinyhelm_core
 )
 
 include_directories(

@@ -2,6 +2,7 @@
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_sensor_msgs/tf2_sensor_msgs.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/point_cloud2_iterator.h>
 #include <geometry_msgs/PolygonStamped.h>
@@ -15,6 +16,7 @@
 #include <tinyhelm_obstacles/theta_star.h>
 
 #include <map>
+#include <set>
 #include <memory>
 
 using namespace tinyhelm;
@@ -57,7 +59,6 @@ public:
 		pnh.param("monitor_rate", monitor_rate_, 10.0);
 		pnh.param("unreachable_cycles", unreachable_cycles_, 3);
 		pnh.param("waypoint_reached_radius", waypoint_reached_radius_, 6.0);
-		pnh.param("replan_cooldown", replan_cooldown_, 0.5);
 		pnh.param("pose_jump_threshold", pose_jump_threshold_, 10.0);
 		pnh.param("grid_publish_period", grid_publish_period_, 2.0);
 
@@ -79,7 +80,6 @@ public:
 
 		timer_ = nh.createTimer(ros::Duration(1.0 / monitor_rate_), &ObstaclePlannerNode::tick, this);
 		last_grid_publish_ = ros::Time(0);
-		last_replan_ = ros::Time(0);
 		ROS_INFO("obstacle_planner: res %.2fm, chunks %.0fm, load radius %.0fm, mask %.1fm, frame %s", res_, chunk_size_, load_radius_, mask_res_, planning_frame_.c_str());
 	}
 
@@ -139,8 +139,25 @@ private:
 
 	void missionCallback(const nav_msgs::Path::ConstPtr& msg) {
 		mission_ = *msg;
+		// Missions can arrive in any frame; everything downstream assumes the planning frame,
+		// and untransformed coordinates silently monitor and plan in the wrong place
+		std::string frame = msg->header.frame_id;
+		if (!frame.empty() && frame != planning_frame_ && !mission_.poses.empty()) {
+			try {
+				auto tf = tf_buffer_.lookupTransform(planning_frame_, frame, ros::Time(0));
+				for (auto& p : mission_.poses) {
+					tf2::doTransform(p, p, tf);
+					p.header.frame_id = planning_frame_;
+				}
+				mission_.header.frame_id = planning_frame_;
+			} catch (tf2::TransformException& e) {
+				ROS_WARN("obstacle_planner: mission in frame '%s' could not be transformed, ignoring it: %s", frame.c_str(), e.what());
+				mission_.poses.clear();
+			}
+		}
 		next_wp_index_ = 0;
 		unreachable_counts_.clear();
+		skipped_.clear();
 		last_published_.clear();
 		blocked_ = false;
 		if (mission_.poses.empty()) publishStatus(tinyhelm_core::MonitorStatus::OK, "No active mission.");
@@ -151,12 +168,24 @@ private:
 	// Strategic waypoints are always visited in order (detours never skip them), so passing
 	// within reach radius of the next one is the ground truth for progress. Matching against
 	// the tactical path by coordinates breaks on and_return/loiter missions where the same
-	// coordinates appear twice.
+	// coordinates appear twice. Waypoints skipped as occupied can never be reached, so they
+	// count as passed once the vessel crosses the perpendicular at the waypoint along the
+	// outbound corridor direction.
 	void updateRemaining(double rx, double ry) {
 		while (next_wp_index_ < mission_.poses.size()) {
 			const auto& p = mission_.poses[next_wp_index_].pose.position;
-			if (std::hypot(p.x - rx, p.y - ry) > waypoint_reached_radius_) break;
-			next_wp_index_++;
+			if (std::hypot(p.x - rx, p.y - ry) <= waypoint_reached_radius_) {
+				next_wp_index_++;
+				continue;
+			}
+			if (skipped_.count((int)next_wp_index_) && next_wp_index_ + 1 < mission_.poses.size()) {
+				const auto& q = mission_.poses[next_wp_index_ + 1].pose.position;
+				if ((rx - p.x) * (q.x - p.x) + (ry - p.y) * (q.y - p.y) > 0.0) {
+					next_wp_index_++;
+					continue;
+				}
+			}
+			break;
 		}
 		remaining_.assign(mission_.poses.begin() + next_wp_index_, mission_.poses.end());
 	}
@@ -195,7 +224,6 @@ private:
 		if (mission_.poses.empty()) return;
 		updateRemaining(rx, ry);
 		if (remaining_.empty()) return;
-
 		nav_msgs::Path rem;
 		rem.header.frame_id = planning_frame_;
 		rem.header.stamp = ev.current_real;
@@ -209,9 +237,11 @@ private:
 		fence_ = buildGeofence(rx, ry);
 		buildLocalField(rx, ry);
 
-		bool path_clear = tactical_.poses.size() >= 2 && corridorClear();
+		// Nothing to monitor until the controller reports a tactical plan; the helm now feeds
+		// the mission to the controller directly, so there is no bootstrap replan anymore
+		if (tactical_.poses.size() < 2) return;
 
-		if (path_clear) {
+		if (corridorClear()) {
 			if (blocked_) ROS_INFO("obstacle_planner: corridor clear again");
 			blocked_ = false;
 			publishStatus(tinyhelm_core::MonitorStatus::OK, "Corridor clear.");
@@ -219,8 +249,13 @@ private:
 		}
 
 		blocked_ = true;
-		if ((ev.current_real - last_replan_).toSec() < replan_cooldown_) return;
-		last_replan_ = ev.current_real;
+
+		// Only produce a new correction when genuinely needed: as long as the vessel is still
+		// on the active correction and its remainder is obstacle-free, there is nothing to fix
+		if (publishedStillValid(rx, ry)) {
+			publishStatus(tinyhelm_core::MonitorStatus::REPLAN, "Active correction still clear.");
+			return;
+		}
 		replan(rx, ry);
 	}
 
@@ -263,6 +298,17 @@ private:
 		return fence;
 	}
 
+	// Trip threshold shared by the tactical corridor check and the correction validity check;
+	// corrections are planned with effective_inflate_ + res_ clearance, so the band between
+	// planning margin and trip threshold gives hysteresis against replan oscillation. Beyond
+	// the local window both sides quantize to mask cells, so the trip radius backs off by a
+	// full mask cell there to keep the band wider than the quantization.
+	bool corridorPointBlocked(double x, double y) {
+		int cx, cy;
+		if (local_field_.worldToCell(x, y, cx, cy)) return local_field_.obstacleDistance(cx, cy) < effective_inflate_ - res_;
+		return grid_->occupiedCoarseNear(x, y, std::max(0.0, effective_inflate_ - mask_res_));
+	}
+
 	bool corridorClear() {
 		for (size_t i = 1; i < tactical_.poses.size(); i++) {
 			double x1 = tactical_.poses[i - 1].pose.position.x, y1 = tactical_.poses[i - 1].pose.position.y;
@@ -271,14 +317,41 @@ private:
 			int steps = std::max(1, (int)(len / (res_ * 2.0)));
 			for (int s = 0; s <= steps; s++) {
 				double t = (double)s / steps;
-				double x = x1 + t * (x2 - x1), y = y1 + t * (y2 - y1);
-				int cx, cy;
-				if (local_field_.worldToCell(x, y, cx, cy)) {
-					if (local_field_.obstacleDistance(cx, cy) < effective_inflate_ - res_) return false;
-				} else if (grid_->occupiedCoarseNear(x, y, effective_inflate_)) {
-					return false;
-				}
+				if (corridorPointBlocked(x1 + t * (x2 - x1), y1 + t * (y2 - y1))) return false;
 			}
+		}
+		return true;
+	}
+
+	// The active correction stays in force while the vessel is still on it and everything
+	// from the vessel's progress point to the end remains obstacle-free
+	bool publishedStillValid(double rx, double ry) {
+		if (last_published_.size() < 2) return false;
+
+		size_t seg = 1;
+		double best = 1e18, best_t = 0.0;
+		for (size_t i = 1; i < last_published_.size(); i++) {
+			double x1 = last_published_[i - 1].pose.position.x, y1 = last_published_[i - 1].pose.position.y;
+			double x2 = last_published_[i].pose.position.x, y2 = last_published_[i].pose.position.y;
+			double dx = x2 - x1, dy = y2 - y1, len2 = dx * dx + dy * dy;
+			double t = len2 > 0.0 ? std::max(0.0, std::min(1.0, ((rx - x1) * dx + (ry - y1) * dy) / len2)) : 0.0;
+			double d = std::hypot(rx - (x1 + t * dx), ry - (y1 + t * dy));
+			if (d < best) { best = d; seg = i; best_t = t; }
+		}
+		if (best > waypoint_reached_radius_) return false;
+
+		double px = last_published_[seg - 1].pose.position.x + best_t * (last_published_[seg].pose.position.x - last_published_[seg - 1].pose.position.x);
+		double py = last_published_[seg - 1].pose.position.y + best_t * (last_published_[seg].pose.position.y - last_published_[seg - 1].pose.position.y);
+		for (size_t i = seg; i < last_published_.size(); i++) {
+			double x2 = last_published_[i].pose.position.x, y2 = last_published_[i].pose.position.y;
+			double len = std::hypot(x2 - px, y2 - py);
+			int steps = std::max(1, (int)(len / (res_ * 2.0)));
+			for (int s = 0; s <= steps; s++) {
+				double t = (double)s / steps;
+				if (corridorPointBlocked(px + t * (x2 - px), py + t * (y2 - py))) return false;
+			}
+			px = x2;
+			py = y2;
 		}
 		return true;
 	}
@@ -316,21 +389,72 @@ private:
 		return out;
 	}
 
-	bool pathsSimilar(const std::vector<geometry_msgs::PoseStamped>& a, const std::vector<geometry_msgs::PoseStamped>& b) {
-		if (a.empty() || b.empty()) return false;
-		auto dev = [](const std::vector<geometry_msgs::PoseStamped>& p, const std::vector<geometry_msgs::PoseStamped>& q) {
-			double worst = 0.0;
-			for (const auto& pp : p) {
-				double best = 1e18;
-				for (size_t i = 1; i < q.size(); i++) {
-					Capsule seg{q[i - 1].pose.position.x, q[i - 1].pose.position.y, q[i].pose.position.x, q[i].pose.position.y, 0.0};
-					best = std::min(best, seg.distance(pp.pose.position.x, pp.pose.position.y));
-				}
-				worst = std::max(worst, best);
+	// Follows the strategic line a->b, detouring with Theta* around each blocked stretch and
+	// rejoining the line immediately after it, so deviation from the surveyed corridor stays
+	// minimal instead of cutting a taut diagonal to the far endpoint. Empty out on failure.
+	void planCorridorLeg(double ax, double ay, double bx, double by, std::vector<PlanPoint>& out) {
+		out.clear();
+		double dx = bx - ax, dy = by - ay;
+		double len = std::hypot(dx, dy);
+		double margin = effective_inflate_ + res_;
+		int steps = std::max(1, (int)std::ceil(len / (res_ * 2.0)));
+		auto at = [&](int i) { double t = (double)i / steps; return PlanPoint{ax + t * dx, ay + t * dy}; };
+		auto clearAt = [&](int i) { PlanPoint p = at(i); return corridorPointClear(p.x, p.y, margin); };
+
+		std::vector<PlanPoint> pts;
+		pts.push_back({ax, ay});
+		int i = 0;
+		while (i < steps) {
+			if (clearAt(i + 1)) {
+				i++;
+				continue;
 			}
-			return worst;
-		};
-		return dev(a, b) < 2.0 && dev(b, a) < 2.0;
+			int to = i + 1;
+			while (to <= steps && !clearAt(to)) to++;
+			PlanPoint s = at(i);
+			PlanPoint g = to <= steps ? at(to) : PlanPoint{bx, by};
+			std::vector<PlanPoint> detour = planLeg(s.x, s.y, g.x, g.y);
+			if (detour.empty()) return;
+			detour = smoothLeg(detour);
+			for (const auto& p : detour) appendPoint(pts, p);
+			i = to;
+		}
+		appendPoint(pts, {bx, by});
+		out = pts;
+	}
+
+	void appendPoint(std::vector<PlanPoint>& pts, const PlanPoint& p) {
+		if (!pts.empty() && std::hypot(pts.back().x - p.x, pts.back().y - p.y) < 1e-6) return;
+		pts.push_back(p);
+	}
+
+	void appendLeg(nav_msgs::Path& path, const std::vector<PlanPoint>& leg, double z) {
+		for (const auto& p : leg) {
+			if (!path.poses.empty()) {
+				const auto& q = path.poses.back().pose.position;
+				if (std::hypot(q.x - p.x, q.y - p.y) < 1e-6) continue;
+			}
+			path.poses.push_back(makePose(p.x, p.y, z));
+		}
+	}
+
+	// First clear point walking from (fx, fy) toward (tx, ty), used to project substitutes
+	// for an occupied waypoint onto its inbound and outbound corridors
+	bool findClearAlong(double fx, double fy, double tx, double ty, double& cx, double& cy) {
+		double dx = tx - fx, dy = ty - fy;
+		double len = std::hypot(dx, dy);
+		if (len < res_) return false;
+		double step = (res_ * 2.0) / len;
+		double margin = effective_inflate_ + res_;
+		for (double t = step; t <= 1.0; t += step) {
+			double x = fx + t * dx, y = fy + t * dy;
+			if (corridorPointClear(x, y, margin)) {
+				cx = x;
+				cy = y;
+				return true;
+			}
+		}
+		return false;
 	}
 
 	void replan(double rx, double ry) {
@@ -341,16 +465,88 @@ private:
 		out.header.stamp = ros::Time::now();
 
 		double px = rx, py = ry;
+		bool on_line = false;
+
+		// Return to the current survey line first. The correction is consumed as a revised
+		// plan, so its first pose is the anchor of the leg in progress, not a goal to visit.
+		double jx, jy;
+		if (findRejoin(rx, ry, jx, jy)) {
+			std::vector<PlanPoint> back = planLeg(rx, ry, jx, jy);
+			double direct = std::hypot(jx - rx, jy - ry);
+			if (!back.empty() && (direct <= mask_res_ || ThetaStar::pathLength(back) <= budget_k_ * direct)) {
+				appendLeg(out, smoothLeg(back), mission_.poses[next_wp_index_].pose.position.z);
+				px = jx;
+				py = jy;
+				on_line = true;
+			}
+		}
+
+		bool any_skipped = false;
 		for (size_t wi = 0; wi < remaining_.size(); wi++) {
 			double gx = remaining_[wi].pose.position.x, gy = remaining_[wi].pose.position.y;
+			double z = remaining_[wi].pose.position.z;
+			int si = strategicIndex(wi);
 
 			if (mask_field_.lethalAt(gx, gy)) {
-				if (bumpUnreachable(wi)) return;
-				publishStatus(tinyhelm_core::MonitorStatus::WARN, "Waypoint " + std::to_string(strategicIndex(wi)) + " occupied, confirming...");
-				return;
-			}
+				// Confirm over several cycles before committing to a skip, as before
+				if (!skipped_.count(si)) {
+					if (++unreachable_counts_[si] < unreachable_cycles_) {
+						publishStatus(tinyhelm_core::MonitorStatus::WARN, "Waypoint " + std::to_string(si) + " occupied, confirming...");
+						return;
+					}
+					skipped_.insert(si);
+					ROS_WARN("obstacle_planner: waypoint %d occupied, substituting corridor projections", si);
+				}
 
-			std::vector<PlanPoint> leg = planLeg(px, py, gx, gy);
+				// Entry substitute: closest clear point to the waypoint on the inbound corridor
+				double ex, ey;
+				if (!findClearAlong(gx, gy, px, py, ex, ey)) {
+					publishStatus(tinyhelm_core::MonitorStatus::OBSERVED_ERROR, "Waypoint " + std::to_string(si) + " occupied and its corridor is fully blocked.");
+					return;
+				}
+
+				std::vector<PlanPoint> leg;
+				if (on_line) planCorridorLeg(px, py, ex, ey, leg);
+				if (leg.empty()) {
+					leg = planLeg(px, py, ex, ey);
+					if (!leg.empty()) leg = smoothLeg(leg);
+				}
+				if (leg.empty()) {
+					publishStatus(tinyhelm_core::MonitorStatus::WARN, "No path within geofence toward occupied waypoint " + std::to_string(si) + ".");
+					return;
+				}
+				appendLeg(out, leg, z);
+				px = ex;
+				py = ey;
+
+				// Exit substitute: first clear point past the waypoint on the outbound corridor,
+				// so the next leg starts clear and exactly on its own survey line
+				if (wi + 1 < remaining_.size()) {
+					double qx = remaining_[wi + 1].pose.position.x, qy = remaining_[wi + 1].pose.position.y;
+					double ox, oy;
+					if (findClearAlong(gx, gy, qx, qy, ox, oy)) {
+						std::vector<PlanPoint> hop = planLeg(px, py, ox, oy);
+						if (!hop.empty()) {
+							appendLeg(out, smoothLeg(hop), z);
+							px = ox;
+							py = oy;
+						}
+					}
+				}
+				any_skipped = true;
+				on_line = true;
+				continue;
+			}
+			skipped_.erase(si);
+
+			// Legs that start on the strategic line hug it; the fallback direct plan covers
+			// legs starting off-line (no rejoin found) or corridor legs that failed to close
+			std::vector<PlanPoint> leg;
+			if (on_line || wi > 0) planCorridorLeg(px, py, gx, gy, leg);
+			if (leg.empty()) {
+				leg = planLeg(px, py, gx, gy);
+				if (!leg.empty()) leg = smoothLeg(leg);
+			}
 			if (leg.empty()) {
 				if (bumpUnreachable(wi)) return;
 				publishStatus(tinyhelm_core::MonitorStatus::WARN, "No path within geofence to waypoint " + std::to_string(strategicIndex(wi)) + ".");
@@ -364,23 +560,48 @@ private:
 				return;
 			}
 
-			leg = smoothLeg(leg);
-			for (size_t i = (out.poses.empty() ? 0 : 1); i < leg.size(); i++) out.poses.push_back(makePose(leg[i].x, leg[i].y, remaining_[wi].pose.position.z));
-
+			appendLeg(out, leg, z);
 			out.poses.back() = remaining_[wi];
 			unreachable_counts_.erase(strategicIndex(wi));
 			px = gx;
 			py = gy;
+			on_line = true;
 		}
 
-		if (pathsSimilar(out.poses, last_published_)) {
-			publishStatus(tinyhelm_core::MonitorStatus::REPLAN, "Detour available (unchanged).");
-			return;
-		}
 		last_published_ = out.poses;
 		path_pub_.publish(out);
-		publishStatus(tinyhelm_core::MonitorStatus::REPLAN, "Detour planned around obstacles.");
-		ROS_INFO("obstacle_planner: replanned %zu poses through %zu waypoints", out.poses.size(), remaining_.size());
+		publishStatus(tinyhelm_core::MonitorStatus::REPLAN, any_skipped ? "Corrected course planned, occupied waypoint(s) skipped via corridor." : "Corrected course planned around obstacles.");
+		ROS_INFO("obstacle_planner: replanned %zu poses through %zu waypoints%s", out.poses.size(), remaining_.size(), any_skipped ? " (skips)" : "");
+	}
+
+	bool corridorPointClear(double x, double y, double margin) {
+		int cx, cy;
+		if (local_field_.worldToCell(x, y, cx, cy)) return local_field_.obstacleDistance(cx, cy) >= margin;
+		return !grid_->occupiedCoarseNear(x, y, margin);
+	}
+
+	// First clear point on the current strategic leg at or past the robot's projection.
+	// Clearance demands effective_inflate_ + res_ while corridorClear trips below
+	// effective_inflate_ - res_, so a published rejoin path passes its own corridor check.
+	bool findRejoin(double rx, double ry, double& jx, double& jy) {
+		if (next_wp_index_ == 0 || next_wp_index_ >= mission_.poses.size()) return false;
+		const auto& a = mission_.poses[next_wp_index_ - 1].pose.position;
+		const auto& b = mission_.poses[next_wp_index_].pose.position;
+		double dx = b.x - a.x, dy = b.y - a.y;
+		double len = std::hypot(dx, dy);
+		if (len < 2.0 * res_) return false;
+		double t0 = std::max(0.0, std::min(1.0, ((rx - a.x) * dx + (ry - a.y) * dy) / (len * len)));
+		double step = res_ / len;
+		double margin = effective_inflate_ + res_;
+		for (double t = t0; t <= 1.0; t += step) {
+			double x = a.x + t * dx, y = a.y + t * dy;
+			if (corridorPointClear(x, y, margin) && !mask_field_.lethalAt(x, y)) {
+				jx = x;
+				jy = y;
+				return true;
+			}
+		}
+		return false;
 	}
 
 	// Plan on the mask field, then re-refine the portion inside the local window at full res
@@ -493,7 +714,7 @@ private:
 	double half_life_, inflate_radius_, soft_radius_, soft_weight_, effective_inflate_ = 0.0;
 	std::vector<geometry_msgs::PoseStamped> last_published_;
 	double min_detour_, detour_frac_, max_detour_, budget_k_;
-	double monitor_rate_, replan_cooldown_, pose_jump_threshold_, grid_publish_period_;
+	double monitor_rate_, pose_jump_threshold_, grid_publish_period_;
 	int unreachable_cycles_;
 
 	std::unique_ptr<ChunkedGrid> grid_;
@@ -506,9 +727,10 @@ private:
 	size_t next_wp_index_ = 0;
 	double waypoint_reached_radius_ = 6.0;
 	std::map<int, int> unreachable_counts_;
+	std::set<int> skipped_;
 	bool blocked_ = false, have_last_pose_ = false;
 	double last_rx_ = 0.0, last_ry_ = 0.0;
-	ros::Time last_grid_publish_, last_replan_;
+	ros::Time last_grid_publish_;
 };
 
 int main(int argc, char** argv) {

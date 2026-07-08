@@ -36,6 +36,7 @@ class GoalServer:
 
 		self.simple_goal_sub = rospy.Subscriber("/waypoints/_path", Path, self.route_callback)
 		self.simple_goal_sub = rospy.Subscriber("/waypoints/_goal", PoseStamped, self.goal_callback)
+		self.revise_sub = rospy.Subscriber("/waypoints/_revise", Path, self.revise_callback)
 		self.clear_goals_sub = rospy.Subscriber("/waypoints/_clear", Empty, self.reset)
 
 		self.vertical_pub = rospy.Publisher("/waypoints/_vertical_target", Float32, queue_size=1)
@@ -76,12 +77,41 @@ class GoalServer:
 
 		self.set_status(ControllerStatus.ACTIVE, "Navigation started!")
 
+	def revise_callback(self, msg):
+		if len(msg.poses) < 2:
+			rospy.logwarn("Revised plan needs at least two poses, ignoring.")
+			return
+
+		frame = msg.header.frame_id
+		if frame and frame != PLANNING_FRAME:
+			try:
+				transform = self.tf2_buffer.lookup_transform(PLANNING_FRAME, frame, rospy.Time(0))
+				msg.poses = [do_transform_pose(p, transform) for p in msg.poses]
+			except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
+				rospy.logwarn("Cannot transform revised plan from frame %s: %s", frame, e)
+				return
+
+		# A revision differs from a new route: the first pose is the line anchor of the leg
+		# in progress, not a goal to visit, so there is no demand to backtrack to it
+		rospy.loginfo("Plan revised: %d poses.", len(msg.poses))
+		self.route = msg.poses
+		self.route_index = 1
+		self.start_goal = msg.poses[0].pose
+		self.end_goal = msg.poses[1].pose
+
+		vert_msg = Float32()
+		vert_msg.data = self.end_goal.position.z
+		self.vertical_pub.publish(vert_msg)
+
+		self.update_plan()
+		self.set_status(ControllerStatus.ACTIVE, "Plan revised.")
+
 	def get_goals(self):
 		return self.start_goal, self.end_goal
 	
 	def goal_reached(self):
 		if len(self.route) > 0:
-			rospy.loginfo("Goal #{self.route_index} reached.")
+			rospy.loginfo(f"Goal #{self.route_index} reached.")
 			if self.route_index < len(self.route)-1:
 				self.route_index +=1
 				self.process_goal(self.route[self.route_index])

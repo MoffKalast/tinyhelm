@@ -135,9 +135,13 @@ public:
 	}
 
 	bool occupiedCoarseNear(double x, double y, double radius) const {
-		for (double my = y - radius; my <= y + radius + mask_res_; my += mask_res_) {
-			for (double mx = x - radius; mx <= x + radius + mask_res_; mx += mask_res_) {
-				if (occupiedCoarseAt(mx, my)) return true;
+		// Query every mask cell whose extent overlaps the square [x - radius, x + radius];
+		// iterating cell indices avoids both missed boundary cells and overshoot beyond radius
+		int x0 = (int)std::floor((x - radius) / mask_res_), x1 = (int)std::floor((x + radius) / mask_res_);
+		int y0 = (int)std::floor((y - radius) / mask_res_), y1 = (int)std::floor((y + radius) / mask_res_);
+		for (int my = y0; my <= y1; my++) {
+			for (int mx = x0; mx <= x1; mx++) {
+				if (occupiedCoarseAt((mx + 0.5) * mask_res_, (my + 0.5) * mask_res_)) return true;
 			}
 		}
 		return false;
