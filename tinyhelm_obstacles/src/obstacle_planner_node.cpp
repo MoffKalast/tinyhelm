@@ -481,6 +481,9 @@ private:
 			}
 		}
 
+		// Connect as many remaining waypoints as possible: individually unplannable ones
+		// are skipped after confirmation instead of abandoning the whole correction, so one
+		// blocked waypoint can no longer silence the planner while the vessel sails on
 		bool any_skipped = false;
 		for (size_t wi = 0; wi < remaining_.size(); wi++) {
 			double gx = remaining_[wi].pose.position.x, gy = remaining_[wi].pose.position.y;
@@ -498,11 +501,21 @@ private:
 					ROS_WARN("obstacle_planner: waypoint %d occupied, substituting corridor projections", si);
 				}
 
-				// Entry substitute: closest clear point to the waypoint on the inbound corridor
+				// Entry substitute: closest clear point to the waypoint on the inbound corridor.
+				// A degenerate corridor (duplicated turn waypoint on and_return missions) falls
+				// back to the current chain position if that is itself clear; a corridor blocked
+				// along its whole length (wall running beside it) drops the waypoint entirely
+				// and routes toward the next one.
 				double ex, ey;
 				if (!findClearAlong(gx, gy, px, py, ex, ey)) {
-					publishStatus(tinyhelm_core::MonitorStatus::OBSERVED_ERROR, "Waypoint " + std::to_string(si) + " occupied and its corridor is fully blocked.");
-					return;
+					if (corridorPointClear(px, py, effective_inflate_ + res_)) {
+						ex = px;
+						ey = py;
+					} else {
+						ROS_WARN_THROTTLE(5.0, "obstacle_planner: waypoint %d and its corridor are blocked, dropping it", si);
+						any_skipped = true;
+						continue;
+					}
 				}
 
 				std::vector<PlanPoint> leg;
@@ -512,8 +525,9 @@ private:
 					if (!leg.empty()) leg = smoothLeg(leg);
 				}
 				if (leg.empty()) {
-					publishStatus(tinyhelm_core::MonitorStatus::WARN, "No path within geofence toward occupied waypoint " + std::to_string(si) + ".");
-					return;
+					ROS_WARN_THROTTLE(5.0, "obstacle_planner: no path toward occupied waypoint %d, dropping it", si);
+					any_skipped = true;
+					continue;
 				}
 				appendLeg(out, leg, z);
 				px = ex;
@@ -537,7 +551,6 @@ private:
 				on_line = true;
 				continue;
 			}
-			skipped_.erase(si);
 
 			// Legs that start on the strategic line hug it; the fallback direct plan covers
 			// legs starting off-line (no rejoin found) or corridor legs that failed to close
@@ -547,25 +560,36 @@ private:
 				leg = planLeg(px, py, gx, gy);
 				if (!leg.empty()) leg = smoothLeg(leg);
 			}
-			if (leg.empty()) {
-				if (bumpUnreachable(wi)) return;
-				publishStatus(tinyhelm_core::MonitorStatus::WARN, "No path within geofence to waypoint " + std::to_string(strategicIndex(wi)) + ".");
-				return;
-			}
 
 			double direct = std::hypot(gx - px, gy - py);
-			if (direct > mask_res_ && ThetaStar::pathLength(leg) > budget_k_ * direct) {
-				if (bumpUnreachable(wi)) return;
-				publishStatus(tinyhelm_core::MonitorStatus::WARN, "Detour to waypoint " + std::to_string(strategicIndex(wi)) + " exceeds budget.");
-				return;
+			bool over_budget = !leg.empty() && direct > mask_res_ && ThetaStar::pathLength(leg) > budget_k_ * direct;
+
+			if (leg.empty() || over_budget) {
+				// During confirmation keep the active correction untouched; once confirmed,
+				// skip this waypoint and keep connecting the rest
+				if (!bumpUnreachable(wi)) {
+					publishStatus(tinyhelm_core::MonitorStatus::WARN, over_budget ? "Detour to waypoint " + std::to_string(si) + " exceeds budget, confirming..." : "No path within geofence to waypoint " + std::to_string(si) + ", confirming...");
+					return;
+				}
+				skipped_.insert(si);
+				any_skipped = true;
+				continue;
 			}
 
 			appendLeg(out, leg, z);
 			out.poses.back() = remaining_[wi];
-			unreachable_counts_.erase(strategicIndex(wi));
+			unreachable_counts_.erase(si);
+			skipped_.erase(si);
 			px = gx;
 			py = gy;
 			on_line = true;
+		}
+
+		// A correction ending at the last plannable point is a safe stop; only one too short
+		// to follow at all is withheld
+		if (out.poses.size() < 2) {
+			publishStatus(tinyhelm_core::MonitorStatus::OBSERVED_ERROR, "No usable corrected course, all remaining waypoints blocked.");
+			return;
 		}
 
 		last_published_ = out.poses;
@@ -626,11 +650,14 @@ private:
 
 	int strategicIndex(size_t remaining_index) { return (int)(next_wp_index_ + remaining_index); }
 
-	// Returns true once the failure has persisted long enough to declare the waypoint unreachable
+	// Returns true once the failure has persisted long enough to declare the waypoint
+	// unreachable; the status is published only on the confirming transition
 	bool bumpUnreachable(size_t remaining_index) {
 		int si = strategicIndex(remaining_index);
-		if (++unreachable_counts_[si] < unreachable_cycles_) return false;
-		publishStatus(tinyhelm_core::MonitorStatus::OBSERVED_ERROR, "Waypoint " + std::to_string(si) + " unreachable after repeated attempts.");
+		int c = ++unreachable_counts_[si];
+		if (c < unreachable_cycles_) return false;
+		if (c == unreachable_cycles_) publishStatus(tinyhelm_core::MonitorStatus::OBSERVED_ERROR, "Waypoint " + std::to_string(si) + " unreachable after repeated attempts, skipping.");
+		unreachable_counts_[si] = unreachable_cycles_;
 		return true;
 	}
 

@@ -58,7 +58,7 @@ class Behaviours:
 	@staticmethod
 	def waypoints_and_return(robot_pose: PoseStamped, msg: Path) -> Intention:
 		rev = list(reversed(msg.poses))
-		msg.poses.extend(rev)
+		msg.poses.extend(rev[1:])  # skip the first reversed pose, it duplicates the turn waypoint
 		return Intention(
 			name="waypoints_and_return",
 			plan=msg,
