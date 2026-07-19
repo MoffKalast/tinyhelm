@@ -31,10 +31,16 @@ add_executable(scan_to_cloud src/scan_to_cloud.cpp)
 add_dependencies(scan_to_cloud ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(scan_to_cloud ${catkin_LIBRARIES})
 
-add_executable(obstacle_planner_node src/obstacle_planner_node.cpp)
-add_dependencies(obstacle_planner_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-target_link_libraries(obstacle_planner_node ${catkin_LIBRARIES})
+install(PROGRAMS
+  scripts/obstacle_planner_node.py
+  scripts/collision_monitor.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
 
-add_executable(collision_monitor src/collision_monitor.cpp)
-add_dependencies(collision_monitor ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-target_link_libraries(collision_monitor ${catkin_LIBRARIES})
+install(FILES
+  scripts/chunked_grid.py
+  scripts/cost_field.py
+  scripts/theta_star.py
+  scripts/corridor_planner.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
