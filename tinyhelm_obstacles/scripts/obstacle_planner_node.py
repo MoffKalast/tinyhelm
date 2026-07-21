@@ -46,7 +46,7 @@ class ObstaclePlannerNode:
 		self.chunk_size = rospy.get_param("~chunk_size", 32.0)
 		self.load_radius = rospy.get_param("~load_radius", 100.0)
 
-		self.hit_delta = rospy.get_param("~hit_delta", 32)
+		self.hit_delta = rospy.get_param("~hit_delta", 16)
 		self.occ_thresh = rospy.get_param("~occupied_threshold", 70)
 		self.half_life = rospy.get_param("~decay_half_life", 300.0)
 
@@ -84,7 +84,10 @@ class ObstaclePlannerNode:
 		self.tf_buffer = tf2_ros.Buffer()
 		self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
-		rospy.Subscriber("/obstacle_cloud", PointCloud2, self.hits_callback, queue_size=5)
+		rospy.Subscriber("/reliable_cloud", PointCloud2, self.reliable_hits_callback, queue_size=5)
+		rospy.Subscriber("/unreliable_cloud", PointCloud2, self.unreliable_hits_callback, queue_size=5)
+		rospy.Subscriber("/free_cloud", PointCloud2, self.free_hits_callback, queue_size=5)
+
 		rospy.Subscriber("/obstacle_grid/clear", Empty, self.grid_clear_callback, queue_size=1)
 		rospy.Subscriber("/tinyhelm/mission", Path, self.mission_callback, queue_size=1)
 		rospy.Subscriber(self.tactical_plan_topic, Path, self.tactical_callback, queue_size=1)
@@ -96,30 +99,44 @@ class ObstaclePlannerNode:
 
 		rospy.loginfo("obstacle_planner: res %.2fm, chunks %.0fm, load radius %.0fm, frame %s", self.res, self.chunk_size, self.load_radius, self.planning_frame)
 
-	def spin(self):
-		"""Own tick loop instead of rospy.Timer so a sim time jump backwards (rosbag
-		reset) is caught here instead of stalling a timer thread until its stale target
-		time comes around again."""
-		rate = rospy.Rate(self.monitor_rate)
-		while not rospy.is_shutdown():
+	def free_hits_callback(self, msg):
+		if msg.header.frame_id != self.planning_frame:
 			try:
-				rate.sleep()
-			except rospy.ROSTimeMovedBackwardsException:
-				self.handle_time_jump()
-				rate = rospy.Rate(self.monitor_rate)
-				continue
-			except rospy.ROSInterruptException:
-				break
-			self.tick()
+				tf = self.tf_buffer.lookup_transform(self.planning_frame, msg.header.frame_id, msg.header.stamp, rospy.Duration(0.1))
+				msg = do_transform_cloud(msg, tf)
+			except tf2_ros.TransformException as e:
+				rospy.logwarn_throttle(5.0, "obstacle_planner: cloud transform failed: %s" % e)
+				return
+			
+		now = rospy.Time.now().to_sec()
+		for x, y in point_cloud2.read_points(msg, field_names=("x", "y"), skip_nans=True):
+			self.grid.remove_hit(x, y, now)
 
-	def handle_time_jump(self):
-		rospy.logwarn("obstacle_planner: time moved backwards, resetting tf buffer and grid")
-		self.tf_buffer.clear()
-		self.grid.clear()
-		self.have_last_pose = False
-		self.last_grid_publish = rospy.Time(0)
-		self.planner.last_published = []
-		self.planner.unreachable_counts.clear()
+	def reliable_hits_callback(self, msg):
+		if msg.header.frame_id != self.planning_frame:
+			try:
+				tf = self.tf_buffer.lookup_transform(self.planning_frame, msg.header.frame_id, msg.header.stamp, rospy.Duration(0.1))
+				msg = do_transform_cloud(msg, tf)
+			except tf2_ros.TransformException as e:
+				rospy.logwarn_throttle(5.0, "obstacle_planner: cloud transform failed: %s" % e)
+				return
+
+		now = rospy.Time.now().to_sec()
+		for x, y in point_cloud2.read_points(msg, field_names=("x", "y"), skip_nans=True):
+			self.grid.add_hit(x, y, now)
+
+	def unreliable_hits_callback(self, msg):
+		if msg.header.frame_id != self.planning_frame:
+			try:
+				tf = self.tf_buffer.lookup_transform(self.planning_frame, msg.header.frame_id, msg.header.stamp, rospy.Duration(0.1))
+				msg = do_transform_cloud(msg, tf)
+			except tf2_ros.TransformException as e:
+				rospy.logwarn_throttle(5.0, "obstacle_planner: cloud transform failed: %s" % e)
+				return
+
+		now = rospy.Time.now().to_sec()
+		for x, y in point_cloud2.read_points(msg, field_names=("x", "y"), skip_nans=True):
+			self.grid.add_unreliable_hit(x, y, now)
 
 	def hits_callback(self, msg):
 		if msg.header.frame_id != self.planning_frame:
@@ -280,6 +297,31 @@ class ObstaclePlannerNode:
 		msg.info.origin.orientation.w = 1.0
 		msg.data = data.astype(np.int8).flatten().tolist()
 		self.local_grid_pub.publish(msg)
+
+	def spin(self):
+		"""Own tick loop instead of rospy.Timer so a sim time jump backwards (rosbag
+		reset) is caught here instead of stalling a timer thread until its stale target
+		time comes around again."""
+		rate = rospy.Rate(self.monitor_rate)
+		while not rospy.is_shutdown():
+			try:
+				rate.sleep()
+			except rospy.ROSTimeMovedBackwardsException:
+				self.handle_time_jump()
+				rate = rospy.Rate(self.monitor_rate)
+				continue
+			except rospy.ROSInterruptException:
+				break
+			self.tick()
+
+	def handle_time_jump(self):
+		rospy.logwarn("obstacle_planner: time moved backwards, resetting tf buffer and grid")
+		self.tf_buffer.clear()
+		self.grid.clear()
+		self.have_last_pose = False
+		self.last_grid_publish = rospy.Time(0)
+		self.planner.last_published = []
+		self.planner.unreachable_counts.clear()
 
 
 if __name__ == "__main__":

@@ -3,9 +3,14 @@
 
 	<arg name="config_file" default="$(find tinyhelm_core)/config/planner_asv.yaml"/>
 
-	<node name="tinyhelm_scan_to_cloud_node" pkg="tinyhelm_obstacles" type="scan_to_cloud" output="screen">
+	<node name="tinyhelm_scan_to_reliable_cloud_node" pkg="tinyhelm_obstacles" type="scan_to_cloud" output="screen">
+		<param name="scan_topic" value="/scan_verified"/>
+		<param name="cloud_topic" value="/reliable_cloud"/>
+	</node>
+
+	<node name="tinyhelm_scan_to_unreliable_cloud_node" pkg="tinyhelm_obstacles" type="scan_to_cloud" output="screen">
 		<param name="scan_topic" value="/scan_filtered"/>
-		<param name="cloud_topic" value="/obstacle_cloud"/>
+		<param name="cloud_topic" value="/unreliable_cloud"/>
 	</node>
 
 	<node name="obstacle_planner_node" pkg="tinyhelm_obstacles" type="obstacle_planner_node.py" output="screen">
@@ -14,9 +19,9 @@
 
 		<param name="resolution" value="0.5"/>
 		<param name="chunk_size" value="32.0"/>
-		<param name="load_radius" value="70.0"/>
+		<param name="load_radius" value="100.0"/>
 
-		<param name="decay_half_life" value="60.0"/>
+		<param name="decay_half_life" value="80.0"/>
 		<param name="inflate_radius" value="1.0"/>
 		<param name="soft_radius" value="15.0"/>
 		<param name="soft_weight" value="10.0"/>

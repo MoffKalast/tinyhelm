@@ -21,6 +21,7 @@ class ChunkedGrid:
 		self.cells = max(1, int(round(chunk_size_m / resolution)))
 		self.chunk_m = self.cells * self.res
 		self.hit_delta = hit_delta
+		self.remove_delta = math.ceil(hit_delta / 2)
 		self.occ_thresh = occupied_threshold
 		self.half_life = half_life_s
 		self.chunks = {}
@@ -36,6 +37,16 @@ class ChunkedGrid:
 		col = math.floor(x / self.res) - k[0] * self.cells
 		return row, col
 
+	def remove_hit(self, x, y, now):
+		k = self.key(x, y)
+		chunk = self.chunks.get(k)
+		if chunk is None:
+			return
+
+		self.decay_chunk(chunk, now)
+		row, col = self.cell_in_chunk(x, y, k)
+		chunk.values[row, col] = max(0, int(chunk.values[row, col]) - self.remove_delta)
+
 	def add_hit(self, x, y, now):
 		k = self.key(x, y)
 		chunk = self.chunks.get(k)
@@ -47,6 +58,18 @@ class ChunkedGrid:
 		row, col = self.cell_in_chunk(x, y, k)
 		chunk.values[row, col] = min(127, int(chunk.values[row, col]) + self.hit_delta)
 		chunk.last_hit = now
+
+	def add_unreliable_hit(self, x, y, now):
+		"""Like add_hit but filters likely noise: only refreshes cells that are already
+		occupied, or empty cells directly adjacent to an occupied one, so confirmed
+		obstacles hold and expand slightly while stray noise is dropped."""
+		if self.occupied_at(x, y):
+			self.add_hit(x, y, now)
+			return
+
+		neighbors = ((x + self.res, y), (x - self.res, y), (x, y + self.res), (x, y - self.res))
+		if any(self.occupied_at(nx, ny) for nx, ny in neighbors):
+			self.add_hit(x, y, now)
 
 	def value_at(self, x, y):
 		chunk = self.chunks.get(self.key(x, y))
