@@ -40,7 +40,7 @@ class ObstaclePlannerNode:
 		self.robot_frame = rospy.get_param("/robot_frame", "base_link")
 
 		self.tactical_plan_topic = rospy.get_param("~tactical_plan_topic", "/waypoints/_plan")
-		self.divergence_param = rospy.get_param("~divergence_param", "/tinyhelm_waypoints_node/max_line_divergence")
+		self.divergence_param = rospy.get_param("~divergence_param", "/tinyhelm_waypoints/max_line_divergence")
 
 		self.res = rospy.get_param("~resolution", 0.5)
 		self.chunk_size = rospy.get_param("~chunk_size", 32.0)
@@ -325,6 +325,6 @@ class ObstaclePlannerNode:
 
 
 if __name__ == "__main__":
-	rospy.init_node("obstacle_planner_node")
+	rospy.init_node("tinyhelm_obstacles")
 	node = ObstaclePlannerNode()
 	node.spin()

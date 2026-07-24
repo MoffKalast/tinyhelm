@@ -38,3 +38,7 @@ install(PROGRAMS
 add_executable(cmd_vel_mux src/cmd_vel_mux.cpp)
 add_dependencies(cmd_vel_mux ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(cmd_vel_mux ${catkin_LIBRARIES})
+
+install(DIRECTORY launch param
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)

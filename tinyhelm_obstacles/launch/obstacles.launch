@@ -1,41 +1,18 @@
 <launch>
 
-	<node name="tinyhelm_scan_to_reliable_cloud_node" pkg="tinyhelm_obstacles" type="scan_to_cloud" output="screen">
-		<param name="scan_topic" value="/scan_verified"/>
-		<param name="cloud_topic" value="/reliable_cloud"/>
-	</node>
+	<arg name="helm_config" default="$(find tinyhelm_core)/param/helm.yaml"/>
+	<arg name="planner_config" default="$(find tinyhelm_core)/param/planner_asv.yaml"/>
+	<arg name="obstacles_config" default="$(find tinyhelm_core)/param/obstacles.yaml"/>
 
-	<node name="tinyhelm_scan_to_unreliable_cloud_node" pkg="tinyhelm_obstacles" type="scan_to_cloud" output="screen">
-		<param name="scan_topic" value="/scan_filtered"/>
-		<param name="cloud_topic" value="/unreliable_cloud"/>
-	</node>
+	<!-- The planner reads the usable corridor width off the active controller's params, hence planner_config -->
+	<rosparam file="$(arg helm_config)" command="load"/>
+	<rosparam file="$(arg planner_config)" command="load"/>
+	<rosparam file="$(arg obstacles_config)" command="load"/>
 
-	<node name="tinyhelm_obstacles" pkg="tinyhelm_obstacles" type="obstacle_planner_node.py" output="screen">
-		<param name="divergence_param" value="/tinyhelm_waypoints/max_line_divergence"/>
+	<node name="tinyhelm_scan_to_reliable_cloud" pkg="tinyhelm_obstacles" type="scan_to_cloud" output="screen"/>
+	<node name="tinyhelm_scan_to_unreliable_cloud" pkg="tinyhelm_obstacles" type="scan_to_cloud" output="screen"/>
 
-		<param name="resolution" value="0.5"/>
-		<param name="chunk_size" value="32.0"/>
-		<param name="load_radius" value="100.0"/>
-
-		<param name="decay_half_life" value="80.0"/>
-		<param name="inflate_radius" value="1.0"/>
-		<param name="soft_radius" value="15.0"/>
-		<param name="soft_weight" value="10.0"/>
-		
-		<param name="min_detour" value="25.0"/>
-		<param name="detour_leg_fraction" value="0.5"/>
-		<param name="max_detour" value="200.0"/>
-		<param name="budget_factor" value="3.0"/>
-
-		<param name="monitor_rate" value="10.0"/>
-		<param name="grid_publish_period" value="1.0"/>
-
-	</node>
-
-	<node name="tinyhelm_collision_monitor" pkg="tinyhelm_obstacles" type="collision_monitor.py" output="screen">
-		<param name="vessel_halfwidth" value="1.0"/>
-		<param name="margin" value="2.0"/>
-		<param name="braking_horizon" value="3.0"/>
-	</node>
+	<node name="tinyhelm_obstacles" pkg="tinyhelm_obstacles" type="obstacle_planner_node.py" output="screen"/>
+	<node name="tinyhelm_collision_monitor" pkg="tinyhelm_obstacles" type="collision_monitor.py" output="screen"/>
 
 </launch>

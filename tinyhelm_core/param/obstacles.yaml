@@ -1,0 +1,71 @@
+tinyhelm_scan_to_reliable_cloud:
+    frame: laser
+
+     # points used for new obstacle detections
+    scan_topic: /scan_verified
+    cloud_topic: /reliable_cloud
+
+tinyhelm_scan_to_unreliable_cloud:
+    frame: laser
+
+    # points used only for keeping existing detecitons alive
+    scan_topic: /scan_filtered
+    cloud_topic: /unreliable_cloud
+
+tinyhelm_obstacles:
+    # Tactical plan published by the active controller, watched for obstacles.
+    tactical_plan_topic: /waypoints/_plan
+
+    # Full param path the usable corridor width is read from at runtime, has to point at the active controller.
+    divergence_param: /tinyhelm_waypoints/max_line_divergence
+
+    resolution: 0.5
+    chunk_size: 32.0
+    load_radius: 100.0
+
+    # Occupancy is accumulated in hit_delta steps and a cell counts as blocked past occupied_threshold.
+    hit_delta: 16
+    occupied_threshold: 70
+
+    # Time for an untouched cell's occupancy to halve, lets stale detections fade out.
+    decay_half_life: 80.0
+
+    # Hard no-go ring around a blocked cell, should be at least the vessel halfwidth.
+    inflate_radius: 1.0
+
+    # Soft cost ring outside the hard one, biases the plan away from obstacles without forbidding the cells.
+    soft_radius: 15.0
+    soft_weight: 10.0
+
+    # Detours shorter than this are not worth replanning for.
+    min_detour: 25.0
+
+    # Cap on detour length, both absolute and as a fraction of the leg being replanned.
+    detour_leg_fraction: 0.5
+    max_detour: 200.0
+
+    # Search is abandoned once the expanded cost exceeds budget_factor times the straight line cost.
+    budget_factor: 3.0
+
+    # Consecutive failed replans before the goal is reported unreachable.
+    unreachable_cycles: 3
+
+    waypoint_reached_radius: 6.0
+
+    # A localization jump larger than this invalidates the accumulated grid.
+    pose_jump_threshold: 10.0
+
+    monitor_rate: 10.0
+    grid_publish_period: 1.0
+
+tinyhelm_collision_monitor:
+    vessel_halfwidth: 1.0
+    margin: 2.0
+
+    # Seconds of projected travel at the current command that make up the stop zone.
+    braking_horizon: 3.0
+
+    # Points inside the stop zone before an estop is raised, guards against single speckle returns.
+    min_points: 2
+
+    heartbeat_period: 1.0

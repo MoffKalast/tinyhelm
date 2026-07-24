@@ -36,7 +36,7 @@ STATUS_NAMES = {
 
 class HelmCore:
 	def __init__(self):
-		rospy.init_node("tinyhelm_core_node")
+		rospy.init_node("tinyhelm_core")
 
 		# Load parameters under the namespace "tinyhelm_core"
 		self.params = rospy.get_param("tinyhelm_core", {})

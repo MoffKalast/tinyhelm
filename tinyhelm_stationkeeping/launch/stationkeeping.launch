@@ -1,7 +1,11 @@
 <launch>
 
-    <node name="tinyhelm_stationkeeping_node" pkg="tinyhelm_stationkeeping" type="stationkeeping_node.py" output="screen">
+	<arg name="helm_config" default="$(find tinyhelm_core)/param/helm.yaml"/>
+	<arg name="planner_config" default="$(find tinyhelm_core)/param/planner_asv.yaml"/>
 
-    </node>
+	<rosparam file="$(arg helm_config)" command="load"/>
+	<rosparam file="$(arg planner_config)" command="load"/>
+
+	<node name="tinyhelm_stationkeeping" pkg="tinyhelm_stationkeeping" type="stationkeeping_node.py" output="screen"/>
 
 </launch>

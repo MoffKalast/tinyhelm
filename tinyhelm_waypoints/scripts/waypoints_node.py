@@ -204,15 +204,15 @@ class LineFollowingController:
 		self.plan_pub = rospy.Publisher("/waypoints/_plan", Path, queue_size=1, latch=True)
 
 		self.pid = PID(
-			rospy.get_param('P', 3.0),
-			rospy.get_param('I', 0.001), 
-			rospy.get_param('D', 65.0)
+			rospy.get_param('~P', 3.0),
+			rospy.get_param('~I', 0.001), 
+			rospy.get_param('~D', 65.0)
 		)
 
 		self.pid_vert = PID(
-			rospy.get_param('P', 3.0),
-			rospy.get_param('I', 0.001), 
-			rospy.get_param('D', 65.0)
+			rospy.get_param('~P', 3.0),
+			rospy.get_param('~I', 0.001), 
+			rospy.get_param('~D', 65.0)
 		)
 
 		self.goal_server = GoalServer(self.tf2_buffer, self.set_status, self.update_plan)
@@ -433,7 +433,7 @@ class LineFollowingController:
 		self.pid_vert.reset()
 
 ctrl = LineFollowingController()
-rate = rospy.Rate(rospy.get_param('rate', 30))
+rate = rospy.Rate(rospy.get_param('~rate', 30))
 rospy.on_shutdown(ctrl.shutdown_cleanup)
 
 while not rospy.is_shutdown():

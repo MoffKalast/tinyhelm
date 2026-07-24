@@ -81,6 +81,6 @@ class CollisionMonitor:
 
 
 if __name__ == "__main__":
-	rospy.init_node("collision_monitor")
+	rospy.init_node("tinyhelm_collision_monitor")
 	node = CollisionMonitor()
 	node.spin()

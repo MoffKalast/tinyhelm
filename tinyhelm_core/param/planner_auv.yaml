@@ -31,9 +31,6 @@ tinyhelm_waypoints:
     # Update rate, should be about the same as localization rate.
     rate: 30
  
-area_to_path:
-    step_size: 5.0
- 
 tinyhelm_stationkeeping:
     max_linear_speed: 1.0
     max_turning_speed: 1.0

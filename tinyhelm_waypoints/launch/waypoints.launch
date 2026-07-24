@@ -1,7 +1,11 @@
 <launch>
 
-    <node name="tinyhelm_waypoints_node" pkg="tinyhelm_waypoints" type="waypoints_node.py" output="screen">
-   
-    </node>
+	<arg name="helm_config" default="$(find tinyhelm_core)/param/helm.yaml"/>
+	<arg name="planner_config" default="$(find tinyhelm_core)/param/planner_asv.yaml"/>
+
+	<rosparam file="$(arg helm_config)" command="load"/>
+	<rosparam file="$(arg planner_config)" command="load"/>
+
+	<node name="tinyhelm_waypoints" pkg="tinyhelm_waypoints" type="waypoints_node.py" output="screen"/>
 
 </launch>

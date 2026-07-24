@@ -35,9 +35,9 @@ class StationKeepingNode:
 		self.enabled = False
 		self.goal_pose = None  # PoseStamped
 		self.pid = PID(
-			rospy.get_param('P', 3.0),
-			rospy.get_param('I', 0.001),
-			rospy.get_param('D', 65.0)
+			rospy.get_param('~P', 3.0),
+			rospy.get_param('~I', 0.001),
+			rospy.get_param('~D', 65.0)
 		)
 		self.deadzone = self.DEADZONE_FRACT * self.MAX_DIVEGENCE
 

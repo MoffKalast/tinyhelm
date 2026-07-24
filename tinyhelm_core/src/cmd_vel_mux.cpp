@@ -111,7 +111,7 @@ private:
 };
 
 int main(int argc, char** argv) {
-	ros::init(argc, argv, "mux_node");
+	ros::init(argc, argv, "tinyhelm_cmd_vel_mux");
 	ros::NodeHandle nh("~");
 	CmdVelMux mux(nh);
 	ros::spin();
