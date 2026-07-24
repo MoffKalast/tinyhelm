@@ -21,7 +21,7 @@ from utils import transform_to_pose, normalize_angle, clamp, PID
 
 class StationKeepingNode:
 	def __init__(self):
-		rospy.init_node("stationkeeping_node")
+		rospy.init_node("tinyhelm_stationkeeping")
 
 		self.ROBOT_FRAME = rospy.get_param('/robot_frame', 'base_link')
 		self.PLANNING_FRAME = rospy.get_param('/planning_frame', 'local')

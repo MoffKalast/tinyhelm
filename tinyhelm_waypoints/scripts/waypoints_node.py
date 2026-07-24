@@ -8,10 +8,9 @@ import tf2_ros
 from utils import *
 from markers import DebugMarkers
 
-from geometry_msgs.msg import Twist, Point
-from visualization_msgs.msg import Marker, MarkerArray
+from geometry_msgs.msg import Twist
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Empty, ColorRGBA, Bool, Float32
+from std_msgs.msg import Empty, Bool, Float32
 
 from tf.transformations import euler_from_quaternion
 from tf2_geometry_msgs import do_transform_pose
@@ -170,26 +169,26 @@ class GoalServer:
 
 class LineFollowingController:
 	def __init__(self):
-		rospy.init_node("line_following_controller")
+		rospy.init_node("tinyhelm_waypoints")
 		global ROBOT_FRAME, PLANNING_FRAME
 
 		ROBOT_FRAME = rospy.get_param('/robot_frame', 'base_link')
 		PLANNING_FRAME = rospy.get_param('/planning_frame', 'local')
 		
-		self.MIN_GOAL_XY_DIST = rospy.get_param('~xy_distance_threshold', 0.5)
+		self.MIN_GOAL_XY_DIST = rospy.get_param('~xy_distance_threshold', 2.0)
 		self.MIN_GOAL_Z_DIST = rospy.get_param('~z_distance_threshold', 0.5)
 
-		self.MAX_LINEAR_SPD = rospy.get_param('~max_linear_speed', 0.45)
+		self.MAX_LINEAR_SPD = rospy.get_param('~max_linear_speed', 1.0)
 		self.MAX_VERTICAL_SPD = rospy.get_param('~max_vertical_speed', 0.5)
-		self.MAX_ANGULAR_SPD = rospy.get_param('~max_turning_speed', 0.9)
+		self.MAX_ANGULAR_SPD = rospy.get_param('~max_turning_speed', 2.0)
 
 		self.LINE_DIVERGENCE = rospy.get_param('~max_line_divergence', 1.0)
 		self.MIN_PROJECT_DIST = rospy.get_param('~min_project_dist', 0.15)
 		self.MAX_PROJECT_DIST = rospy.get_param('~max_project_dist', 1.2)
 
-		self.SIDE_OFFSET_MULT = rospy.get_param('~side_offset_mult', 0.5)
+		self.SIDE_OFFSET_MULT = rospy.get_param('~side_offset_mult', 0.8)
 
-		self.IGNORE_ALTITUDE = rospy.get_param('~ignore_altitude', False)
+		self.IGNORE_ALTITUDE = rospy.get_param('~ignore_altitude', True)
 
 		self.DEBUG_MARKERS = rospy.get_param('~publish_debug_markers', True)
 

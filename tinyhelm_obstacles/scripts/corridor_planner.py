@@ -7,15 +7,7 @@ WARN = "warn"
 REPLAN = "replan"
 ERROR = "error"
 
-
 class CorridorPlanner:
-	"""All planning logic and mission progress state, free of any ROS dependency. The
-	node owns subscriptions, TF and message conversion and hands in the mission and
-	tactical path as lists of (x, y, z) tuples plus a freshly built CostField each tick;
-	this class decides whether the corridor is intruded and assembles corrections.
-
-	status_cb(level, message) mirrors the MonitorStatus publications of the C++ node,
-	log_info/log_warn mirror its rosconsole output; the node wires these to ROS."""
 
 	def __init__(self, config, status_cb, log_info, log_warn):
 		self.cfg = config

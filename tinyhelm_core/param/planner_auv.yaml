@@ -1,4 +1,4 @@
-waypoints:
+tinyhelm_waypoints:
     publish_debug_markers: true
 
     # Any Z sent will be set to zero if true
@@ -34,7 +34,7 @@ waypoints:
 area_to_path:
     step_size: 5.0
  
-stationkeeping:
+tinyhelm_stationkeeping:
     max_linear_speed: 1.0
     max_turning_speed: 1.0
  

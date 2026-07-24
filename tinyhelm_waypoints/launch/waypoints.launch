@@ -1,13 +1,7 @@
 <launch>
 
-    <arg name="config_file" default="$(find tinyhelm_core)/config/planner_asv.yaml"/>
-
     <node name="tinyhelm_waypoints_node" pkg="tinyhelm_waypoints" type="waypoints_node.py" output="screen">
-        <rosparam command="load" file="$(arg config_file)" param="waypoints"/>
-    </node>
-
-    <node name="tinyhelm_area_to_path_node" pkg="tinyhelm_waypoints" type="area_to_path_node.py" output="screen">
-        <rosparam command="load" file="$(arg config_file)" param="area_to_path"/>
+   
     </node>
 
 </launch>

@@ -1,25 +1,25 @@
-waypoints:
+tinyhelm_waypoints:
     publish_debug_markers: true
 
     # Any Z sent will be set to zero if true
     ignore_altitude: false
  
-    max_linear_speed: 1.0
-    max_turning_speed: 2.0
+    max_linear_speed: 4.0
+    max_turning_speed: 3.0
     max_vertical_speed: 1.0
  
     # If robot_frame is this far from the line, the projected distance will be min and scale to max when it's on the line.
-    max_line_divergence: 1.5
+    max_line_divergence: 2.0
  
     # If any obstacles are defined then line divergence + robot width are used for finding a suitably wide path.
-    robot_width: 3.0
+    robot_width: 2.0
  
     # The carrot is projected at least/most this far ahead. Reduce min distance and increase max distance for smoother, but less accurate following.
     min_project_dist: 0.3
-    max_project_dist: 5.0
+    max_project_dist: 10.0
  
     # Distance at which the goal is considered reached.
-    xy_distance_threshold: 1.0
+    xy_distance_threshold: 2.0
     z_distance_threshold: 0.5
  
     # PID params for rotational heading control.
@@ -33,15 +33,12 @@ waypoints:
     # Update rate, should be about the same as localization rate.
     rate: 30
  
-area_to_path:
-    step_size: 5.0
- 
-stationkeeping:
-    max_linear_speed: 0.5
-    max_turning_speed: 0.5
+tinyhelm_stationkeeping:
+    max_linear_speed: 1.0
+    max_turning_speed: 1.0
  
     # The radius we intend to stay in
-    max_divergence: 10.0
+    max_divergence: 4.0
  
     # If any obstacles are defined then line divergence + robot width are used for finding a suitably wide path.
     deadzone_fraction: 0.5

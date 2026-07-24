@@ -11,7 +11,6 @@ find_package(catkin REQUIRED COMPONENTS
 
 generate_dynamic_reconfigure_options(
     config/Waypoints.cfg
-    config/AreaToPath.cfg
 )
 
 catkin_package(
@@ -24,6 +23,5 @@ include_directories(
 
 install(PROGRAMS
     scripts/waypoints_node.py
-    scripts/area_to_path_node.py
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

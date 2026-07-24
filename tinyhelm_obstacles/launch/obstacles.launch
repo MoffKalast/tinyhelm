@@ -1,8 +1,5 @@
 <launch>
 
-
-	<arg name="config_file" default="$(find tinyhelm_core)/config/planner_asv.yaml"/>
-
 	<node name="tinyhelm_scan_to_reliable_cloud_node" pkg="tinyhelm_obstacles" type="scan_to_cloud" output="screen">
 		<param name="scan_topic" value="/scan_verified"/>
 		<param name="cloud_topic" value="/reliable_cloud"/>
@@ -13,9 +10,8 @@
 		<param name="cloud_topic" value="/unreliable_cloud"/>
 	</node>
 
-	<node name="obstacle_planner_node" pkg="tinyhelm_obstacles" type="obstacle_planner_node.py" output="screen">
-		<!--<param name="tactical_plan_topic" value="/waypoints/_plan"/>-->
-		<param name="divergence_param" value="/tinyhelm_waypoints_node/max_line_divergence"/>
+	<node name="tinyhelm_obstacles" pkg="tinyhelm_obstacles" type="obstacle_planner_node.py" output="screen">
+		<param name="divergence_param" value="/tinyhelm_waypoints/max_line_divergence"/>
 
 		<param name="resolution" value="0.5"/>
 		<param name="chunk_size" value="32.0"/>
@@ -36,7 +32,7 @@
 
 	</node>
 
-	<node name="collision_monitor" pkg="tinyhelm_obstacles" type="collision_monitor.py" output="screen">
+	<node name="tinyhelm_collision_monitor" pkg="tinyhelm_obstacles" type="collision_monitor.py" output="screen">
 		<param name="vessel_halfwidth" value="1.0"/>
 		<param name="margin" value="2.0"/>
 		<param name="braking_horizon" value="3.0"/>
