@@ -1,192 +1,305 @@
 import math
 import heapq
+
 from cost_field import LETHAL
 
-NEIGHBOURS = [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)]
+NEIGHBOURS = ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1))
+
+OK = "ok"
+GOAL_IN_OBSTACLE = "goal_in_obstacle"
+GOAL_OUTSIDE_CORRIDOR = "goal_outside_corridor"
+START_TRAPPED = "start_trapped"
+NO_ROUTE = "no_route"
 
 def path_length(points):
 	return sum(math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]) for i in range(1, len(points)))
 
-def line_clear(field, a, b, step):
-	"""True when no sample strictly between a and b is lethal, sampling every `step` metres."""
-	length = math.hypot(b[0] - a[0], b[1] - a[1])
-	steps = max(1, int(length / step))
-	for s in range(1, steps):
-		t = s / steps
-		if field.lethal_at(a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])):
-			return False
-	return True
+def integrated_cost(field, ax, ay, bx, by, step):
+	"""Path cost of one straight segment in world space: length plus the soft proximity cost
+	integrated along it. LETHAL if any sample is lethal. Shares its convention with
+	SearchGrid.segment_cost so smoothing compares like with like against the search."""
+	length = math.hypot(bx - ax, by - ay)
+	samples = max(1, int(length / step))
 
-def smooth_leg(field, leg, step):
-	"""Theta* style string pulling: greedily link each point to the furthest point it has
-	line of sight to, dropping everything in between, leaving one taut segment chain."""
-	if len(leg) <= 2:
-		return leg
+	soft = 0.0
+	for i in range(1, samples + 1):
+		t = i / samples
+		c = field.cost_at(ax + t * (bx - ax), ay + t * (by - ay))
+		if c == LETHAL:
+			return LETHAL
+		soft += c
 
-	out = [leg[0]]
+	return length * (1.0 + soft / samples)
+
+def cumulative_cost(field, points, step):
+	"""Running cost of the path up to each point, so a shortcut can be compared against the stretch
+	it would replace with two lookups instead of a fresh summation per candidate."""
+	cumulative = [0.0]
+	for i in range(1, len(points)):
+		leg = integrated_cost(field, points[i - 1][0], points[i - 1][1], points[i][0], points[i][1], step)
+		cumulative.append(LETHAL if leg == LETHAL else cumulative[-1] + leg)
+
+	return cumulative
+
+def smooth_path(field, points, step):
+	"""String pulling that respects the cost field. A shortcut is taken only when it is no more
+	expensive than the stretch it replaces, so the standoff the search paid for survives instead of
+	being pulled back onto the inflation boundary. Testing lethality alone, as this used to, undid
+	the whole soft cost."""
+	if len(points) <= 2:
+		return list(points)
+
+	cumulative = cumulative_cost(field, points, step)
+
+	out = [points[0]]
 	i = 0
-	while i < len(leg) - 1:
-		j = len(leg) - 1
-		while j > i + 1 and not line_clear(field, leg[i], leg[j], step):
+	while i < len(points) - 1:
+		j = len(points) - 1
+		while j > i + 1:
+			direct = integrated_cost(field, points[i][0], points[i][1], points[j][0], points[j][1], step)
+			if direct < LETHAL and direct <= cumulative[j] - cumulative[i] + 1e-9:
+				break
 			j -= 1
-		out.append(leg[j])
+
+		out.append(points[j])
 		i = j
+
 	return out
 
-class ThetaStar:
-	"""Any-angle Theta* on a virtual grid spanning the bounding box of start and goal plus
-	a margin, at the cost field's resolution. Cost and lethality lookups delegate to the
-	field's world-space queries, which return free outside the field extent, so planning
-	is not clipped at the loaded window: unseen space is optimistically clear. Standard
-	A* expansion on the 8-connected grid, but each expanded neighbour first tries to
-	connect straight to its parent's parent if line of sight is free, which yields taut,
-	any-angle paths. Segment cost = euclidean length plus the soft obstacle-proximity
-	cost integrated along the segment, so paths keep standoff when they can. Sparse dicts
-	instead of dense arrays keep the virtual grid free until actually explored."""
+class SearchGrid:
+	"""Virtual grid over the bounding box of start and goal plus a margin, at the cost field's
+	resolution. Nothing is allocated until a cell is touched. World lookups go through the field,
+	which reports free outside its extent, so unseen space stays optimistically clear and the
+	search is not clipped at the loaded window.
 
-	# The heuristic is inflated a hair to break the equal-cost plateaus of free space,
-	# which would otherwise make python-side A* crawl on long unobstructed legs
-	def __init__(self, expansion_limit=5000, heuristic_weight=1.001):
-		self.expansion_limit = expansion_limit
-		self.heuristic_weight = heuristic_weight
+	This exists as an object rather than a stack of closures inside plan() so the quantisation, the
+	memo and the cost model are all reachable from outside, which is what the C++ port wants and
+	what makes an injected heuristic possible at all."""
 
-		# Reported so the limit is observable rather than silently truncating searches
-		self.last_expansions = 0
-		self.hit_limit = False
+	def __init__(self, field, sx, sy, gx, gy, margin):
+		self.field = field
+		self.res = field.res
+		self.origin_x = math.floor((min(sx, gx) - margin) / self.res) * self.res
+		self.origin_y = math.floor((min(sy, gy) - margin) / self.res) * self.res
+		self.cols = int(math.ceil((max(sx, gx) + margin - self.origin_x) / self.res)) + 1
+		self.rows = int(math.ceil((max(sy, gy) + margin - self.origin_y) / self.res)) + 1
 
-	def plan(self, field, sx, sy, gx, gy, margin):
-		"""Returns a list of (x, y) tuples, empty on failure. The start is nudged out of
-		lethal space if sensor noise painted the vessel's own cell; a lethal goal fails."""
-		res = field.res
-		origin_x = math.floor((min(sx, gx) - margin) / res) * res
-		origin_y = math.floor((min(sy, gy) - margin) / res) * res
-		cols = int(math.ceil((max(sx, gx) + margin - origin_x) / res)) + 1
-		rows = int(math.ceil((max(sy, gy) + margin - origin_y) / res)) + 1
+		# Every lookup quantises to these cells and both origins are snapped to resolution
+		# multiples, so the memo is exact and collapses the millions of repeated field queries a
+		# search makes into one per distinct cell
+		self.cost_cache = {}
 
-		def to_world(cell):
-			return origin_x + (cell[0] + 0.5) * res, origin_y + (cell[1] + 0.5) * res
+	def to_world(self, cell):
+		return self.origin_x + (cell[0] + 0.5) * self.res, self.origin_y + (cell[1] + 0.5) * self.res
 
-		# All lookups quantize to the same virtual cells (both origins are snapped to
-		# resolution multiples), so a per-cell memo is exact and collapses the millions
-		# of repeated field queries a search makes into one per distinct cell
-		cost_cache = {}
+	def to_cell(self, x, y):
+		return int(math.floor((x - self.origin_x) / self.res)), int(math.floor((y - self.origin_y) / self.res))
 
-		def cell_cost(cell):
-			c = cost_cache.get(cell)
-			if c is None:
-				c = field.cost_at(*to_world(cell))
-				cost_cache[cell] = c
-			return c
+	def inside(self, cell):
+		return 0 <= cell[0] < self.cols and 0 <= cell[1] < self.rows
 
-		def lethal(cell):
-			return cell_cost(cell) == LETHAL
+	def cost(self, cell):
+		c = self.cost_cache.get(cell)
+		if c is None:
+			x, y = self.to_world(cell)
+			c = self.field.cost_at(x, y)
+			self.cost_cache[cell] = c
 
-		start = (math.floor((sx - origin_x) / res), math.floor((sy - origin_y) / res))
-		goal = (math.floor((gx - origin_x) / res), math.floor((gy - origin_y) / res))
-		if lethal(goal):
-			return []
-		if lethal(start):
-			start = self.nudge_free(lethal, start)
-			if start is None:
-				return []
+		return c
 
-		def heuristic(cell):
-			return math.hypot(goal[0] - cell[0], goal[1] - cell[1]) * res * self.heuristic_weight
+	def lethal(self, cell):
+		return self.cost(cell) == LETHAL
 
-		self.last_expansions = 0
-		self.hit_limit = False
+	def straight_length(self, a, b):
+		return math.hypot(b[0] - a[0], b[1] - a[1]) * self.res
 
-		g = {start: 0.0}
-		parent = {start: start}
-		closed = set()
-		open_heap = [(heuristic(start), 0, start)]
-		tiebreak = 1
-		expansions = 0
-
-		while open_heap:
-			cur = heapq.heappop(open_heap)[2]
-			if cur in closed:
-				continue
-			closed.add(cur)
-			if cur == goal:
-				break
-
-			expansions += 1
-			self.last_expansions = expansions
-			if expansions > self.expansion_limit:
-				self.hit_limit = True
-				return []
-
-			for ox, oy in NEIGHBOURS:
-				nb = (cur[0] + ox, cur[1] + oy)
-				if nb[0] < 0 or nb[1] < 0 or nb[0] >= cols or nb[1] >= rows:
-					continue
-				if nb in closed or lethal(nb):
-					continue
-
-				par = parent[cur]
-				via_parent = g[par] + self.segment_cost(cell_cost, res, par, nb)
-				if par != cur and via_parent < LETHAL and self.cell_line_of_sight(lethal, par, nb):
-					ng = via_parent
-					npar = par
-				else:
-					ng = g[cur] + self.segment_cost(cell_cost, res, cur, nb)
-					npar = cur
-
-				if ng < g.get(nb, LETHAL):
-					g[nb] = ng
-					parent[nb] = npar
-					heapq.heappush(open_heap, (ng + heuristic(nb), tiebreak, nb))
-					tiebreak += 1
-
-		if goal not in parent:
-			return []
-
-		path = []
-		cur = goal
-		while True:
-			path.append(to_world(cur))
-			if parent[cur] == cur:
-				break
-			cur = parent[cur]
-		path.reverse()
-		path[0] = (sx, sy)
-		path[-1] = (gx, gy)
-		return path
-
-	def cell_line_of_sight(self, lethal, a, b):
+	def line_of_sight(self, a, b):
 		steps = max(abs(b[0] - a[0]), abs(b[1] - a[1]))
+		ax, ay = a
+		dx, dy = b[0] - ax, b[1] - ay
 		for i in range(1, steps):
 			t = i / steps
-			cell = (round(a[0] + t * (b[0] - a[0])), round(a[1] + t * (b[1] - a[1])))
-			if lethal(cell):
+			if self.lethal((int(ax + t * dx + 0.5), int(ay + t * dy + 0.5))):
 				return False
+
 		return True
 
-	def segment_cost(self, cell_cost, res, a, b):
-		"""Euclidean length plus the soft proximity cost integrated along the segment,
-		sampled per crossed cell like the C++ version; LETHAL if any sample is lethal."""
-		steps = max(1, abs(b[0] - a[0]), abs(b[1] - a[1]))
-		length = math.hypot(b[0] - a[0], b[1] - a[1]) * res
+	def segment_cost(self, a, b):
+		"""Euclidean length plus the soft proximity cost integrated along the segment, sampled once
+		per crossed cell. LETHAL if any sample is lethal."""
+		ax, ay = a
+		dx, dy = b[0] - ax, b[1] - ay
+		steps = max(1, abs(dx), abs(dy))
+		length = math.hypot(dx, dy) * self.res
 
 		soft = 0.0
 		for i in range(1, steps + 1):
 			t = i / steps
-			c = cell_cost((round(a[0] + t * (b[0] - a[0])), round(a[1] + t * (b[1] - a[1]))))
+			c = self.cost((int(ax + t * dx + 0.5), int(ay + t * dy + 0.5)))
 			if c == LETHAL:
 				return LETHAL
 			soft += c
 
-		return length + soft * (length / steps)
+		return length * (1.0 + soft / steps)
 
-	# Sensor noise can momentarily paint the vessel's own cell; escape to the nearest free cell
-	def nudge_free(self, lethal, cell):
-		for r in range(1, 9):
+	def nudge_free(self, cell, max_radius):
+		"""Sensor noise, or simply hugging a corridor, can leave the vessel's own cell inside the
+		inflation. Walk outward rings for somewhere the search can legally begin."""
+		for r in range(1, max_radius + 1):
 			for oy in range(-r, r + 1):
-				for ox in range(-r, r + 1):
-					if max(abs(ox), abs(oy)) != r:
-						continue
+				span = (-r, r) if abs(oy) != r else range(-r, r + 1)
+				for ox in span:
 					candidate = (cell[0] + ox, cell[1] + oy)
-					if not lethal(candidate):
+					if self.inside(candidate) and not self.lethal(candidate):
 						return candidate
+
 		return None
+
+class EuclideanHeuristic:
+	"""Straight line distance to the goal. Admissible because segment cost is length times a
+	factor of at least one, so it can never overestimate."""
+
+	def __init__(self, gx, gy):
+		self.gx = gx
+		self.gy = gy
+
+	def estimate(self, x, y):
+		return math.hypot(self.gx - x, self.gy - y)
+
+class ThetaStar:
+	"""Any-angle Theta* on a virtual grid at the cost field's resolution.
+
+	Two departures from the textbook, both because the grid is weighted rather than uniform. The
+	parent jump is taken only when it is actually cheaper: canonical Theta* takes it whenever line
+	of sight exists, which is sound only when the triangle inequality holds, and with a soft
+	proximity cost it does not. Taking it unconditionally drove every path onto the straight line
+	through the cheapest-looking gap and made the soft cost purely decorative. Ties are broken
+	toward larger g, since equal-f plateaus in open water are what made this crawl.
+
+	There is no expansion limit. The corridor bounds the reachable set, so an exhaustive failure is
+	bounded by geometry; a limit only turned slow searches into wrong answers."""
+
+	def __init__(self, nudge_radius=8):
+		self.nudge_radius = nudge_radius
+
+		self.last_expansions = 0
+		self.reason = OK
+		self.start_nudged = False
+
+	def plan(self, field, sx, sy, gx, gy, margin, heuristic=None):
+		"""Returns a list of (x, y), empty on failure with self.reason saying why. When
+		self.start_nudged is set the first point is not the vessel's position but the nearest place
+		the search could legally start; the caller owns closing that gap."""
+		self.last_expansions = 0
+		self.reason = OK
+		self.start_nudged = False
+
+		grid = SearchGrid(field, sx, sy, gx, gy, margin)
+		if heuristic is None:
+			heuristic = EuclideanHeuristic(gx, gy)
+
+		start = grid.to_cell(sx, sy)
+		goal = grid.to_cell(gx, gy)
+
+		if grid.lethal(goal):
+			self.reason = GOAL_OUTSIDE_CORRIDOR if field.outside_corridor_at(gx, gy) else GOAL_IN_OBSTACLE
+			return []
+
+		if grid.lethal(start):
+			nudged = grid.nudge_free(start, self.nudge_radius)
+			if nudged is None:
+				self.reason = START_TRAPPED
+				return []
+			start = nudged
+			self.start_nudged = True
+
+		# An optimistic heuristic that cannot reach the goal proves it is unreachable at full
+		# resolution too, so the expensive exhaustive confirmation can be skipped entirely
+		start_x, start_y = grid.to_world(start)
+		if heuristic.estimate(start_x, start_y) == LETHAL:
+			self.reason = NO_ROUTE
+			return []
+
+		came_from = self.search(grid, start, goal, heuristic)
+		if came_from is None:
+			self.reason = NO_ROUTE
+			return []
+
+		return self.reconstruct(grid, came_from, start, goal, sx, sy, gx, gy)
+
+	def search(self, grid, start, goal, heuristic):
+		g = {start: 0.0}
+		parent = {start: start}
+		closed = set()
+
+		start_x, start_y = grid.to_world(start)
+		open_heap = [(heuristic.estimate(start_x, start_y), 0.0, 0, start)]
+		counter = 1
+		expansions = 0
+
+		while open_heap:
+			current = heapq.heappop(open_heap)[3]
+			if current in closed:
+				continue
+
+			closed.add(current)
+			if current == goal:
+				self.last_expansions = expansions
+				return parent
+
+			expansions += 1
+
+			for ox, oy in NEIGHBOURS:
+				neighbour = (current[0] + ox, current[1] + oy)
+				if not grid.inside(neighbour) or neighbour in closed or grid.lethal(neighbour):
+					continue
+
+				cost = g[current] + grid.segment_cost(current, neighbour)
+				via = current
+
+				# Geometric length is a lower bound on segment cost, so a jump that cannot beat the
+				# step on length alone cannot beat it at all. Testing that first skips the sampling
+				# and the line of sight walk for most neighbours without changing any answer.
+				ancestor = parent[current]
+				if ancestor != current and g[ancestor] + grid.straight_length(ancestor, neighbour) < cost:
+					jump = g[ancestor] + grid.segment_cost(ancestor, neighbour)
+					if jump < cost and grid.line_of_sight(ancestor, neighbour):
+						cost = jump
+						via = ancestor
+
+				if cost >= g.get(neighbour, LETHAL):
+					continue
+
+				nx, ny = grid.to_world(neighbour)
+				estimate = heuristic.estimate(nx, ny)
+				if estimate == LETHAL:
+					continue
+
+				g[neighbour] = cost
+				parent[neighbour] = via
+				heapq.heappush(open_heap, (cost + estimate, -cost, counter, neighbour))
+				counter += 1
+
+		self.last_expansions = expansions
+		return None
+
+	def reconstruct(self, grid, parent, start, goal, sx, sy, gx, gy):
+		points = []
+		current = goal
+		while True:
+			points.append(grid.to_world(current))
+			if parent[current] == current:
+				break
+			current = parent[current]
+
+		points.reverse()
+
+		# Snap the ends onto the real request so quantisation does not accumulate across chained
+		# legs. The start is only snapped when the search actually began there; after a nudge the
+		# first point has to stay the reachable one or the opening segment cuts back through the
+		# inflation the nudge existed to escape.
+		if not self.start_nudged:
+			points[0] = (sx, sy)
+		points[-1] = (gx, gy)
+
+		return points

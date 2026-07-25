@@ -4,7 +4,7 @@
 	<arg name="planner_config" default="$(find tinyhelm_core)/param/planner_asv.yaml"/>
 	<arg name="obstacles_config" default="$(find tinyhelm_core)/param/obstacles.yaml"/>
 
-	<!-- The planner reads the usable corridor width off the active controller's params, hence planner_config -->
+	<!-- The monitor reads its clearance off the active controller's params, hence planner_config -->
 	<rosparam file="$(arg helm_config)" command="load"/>
 	<rosparam file="$(arg planner_config)" command="load"/>
 	<rosparam file="$(arg obstacles_config)" command="load"/>
@@ -12,6 +12,8 @@
 	<node name="tinyhelm_scan_to_reliable_cloud" pkg="tinyhelm_obstacles" type="scan_to_cloud" output="screen"/>
 	<node name="tinyhelm_scan_to_unreliable_cloud" pkg="tinyhelm_obstacles" type="scan_to_cloud" output="screen"/>
 
-	<node name="tinyhelm_obstacles" pkg="tinyhelm_obstacles" type="obstacle_planner_node.py" output="screen"/>
+	<node name="tinyhelm_costmap" pkg="tinyhelm_obstacles" type="costmap_node.py" output="screen"/>
+	<node name="tinyhelm_planner" pkg="tinyhelm_obstacles" type="planner_node.py" output="screen"/>
+	<node name="tinyhelm_obstacles" pkg="tinyhelm_obstacles" type="obstacle_monitor_node.py" output="screen"/>
 
 </launch>

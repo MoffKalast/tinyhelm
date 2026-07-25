@@ -51,7 +51,7 @@ class HelmCore:
 		self.cfg_loader = ConfigLoader(self.params)
 
 		self.ROBOT_FRAME = rospy.get_param("/robot_frame", "base_link")
-		self.PLANNING_FRAME = rospy.get_param("/planning_frame", "map")
+		self.PLANNING_FRAME = rospy.get_param("/planning_frame", "local")
 		
 		self.estop_topic = self.params.get("estop_topic", "/tinyhelm/estop")
 		self.enabled_topic = self.params.get("enabled_topic", "/tinyhelm/enabled")
@@ -86,6 +86,10 @@ class HelmCore:
 		self.enabled = False
 		self.active_controller: Optional[str] = None
 		self.manual_control = False
+
+		# set_intention publishes the plan before recording it, so a controller reporting ACTIVE in that
+		# window reaches controller_status_callback before this exists
+		self.current_behavior: Optional[Dict[str, Any]] = None
 
 		self.manual_home = None
 

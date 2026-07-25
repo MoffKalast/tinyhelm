@@ -1,11 +1,14 @@
 <package format="2">
     <name>tinyhelm_obstacles</name>
     <version>0.0.1</version>
-    <description>Decaying obstacle grid and theta* replanning.</description>
+    <description>Decaying obstacle costmap and theta* replanning.</description>
     <maintainer email="vid.rijavec@fri.uni-lj.si">MoffKalast</maintainer>
     <license>BSD</license>
 
     <buildtool_depend>catkin</buildtool_depend>
+
+    <build_depend>message_generation</build_depend>
+    <exec_depend>message_runtime</exec_depend>
 
     <depend>rospy</depend>
     <depend>roscpp</depend>

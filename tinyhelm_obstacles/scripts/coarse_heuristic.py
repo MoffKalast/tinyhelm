@@ -1,0 +1,105 @@
+import math
+import heapq
+import numpy as np
+from scipy import ndimage
+
+from cost_field import SOFT_WEIGHT
+
+NEIGHBOURS = ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1))
+
+# An eight connected grid can only approximate a straight line, overestimating it by at most this
+# factor, so dividing by it keeps the estimate admissible
+OCTILE_OVERSHOOT = 1.0 + math.sqrt(2.0) - 2.0 / math.sqrt(2.0) + 1e-9
+
+class CoarseHeuristic:
+	"""Cost to the goal precomputed by Dijkstra over a downsampled copy of the window, used as the
+	heuristic for the full resolution search. Plain euclidean distance is a very weak bound here
+	because segment cost carries the soft proximity penalty on top of length, so the fine search
+	ends up expanding most of the corridor; this gives it something informed to aim at.
+
+	Everything about the coarse layer errs optimistic, because a heuristic that overestimates makes
+	the search wrong rather than slow:
+
+	  - a coarse cell counts as blocked only when every fine cell inside it is blocked, so a row of
+	    marina piles stays passable instead of merging into a wall
+	  - inflation is applied in whole coarse cells, rounded down
+	  - only geometric length is accumulated, never the soft penalty
+	  - the octile overshoot is divided back out
+
+	Cells the coarse pass cannot reach are unreachable at full resolution too, since the coarse
+	layer is strictly more permissive, so those are reported as infinite and prune the fine search
+	outright."""
+
+	def __init__(self, field, gx, gy, factor=4):
+		self.factor = factor
+		self.res = field.res * factor
+		self.origin_x = field.origin_x
+		self.origin_y = field.origin_y
+
+		blocked, soft = self.downsample(field)
+		self.cost_to_goal = self.dijkstra(blocked, soft, gx, gy)
+
+	def downsample(self, field):
+		occupied = field.dist <= field.inflate
+		n = occupied.shape[0] // self.factor
+		usable = self.factor * n
+
+		blocks = occupied[:usable, :usable].reshape(n, self.factor, n, self.factor)
+
+		# all() rather than any(): a coarse cell is only impassable when nothing inside it is free
+		blocked = blocks.all(axis=(1, 3))
+
+		rings = int(field.inflate / self.res)
+		if rings > 0:
+			blocked = ndimage.binary_dilation(blocked, iterations=rings)
+
+		# The fine search cannot leave the corridor either, so flooding the whole window is wasted
+		# work. any() again keeps it optimistic: a coarse cell counts as inside if any part of it is.
+		inside = field.corridor_ok[:usable, :usable].reshape(n, self.factor, n, self.factor).any(axis=(1, 3))
+		blocked |= ~inside
+
+		# Cheapest soft penalty available anywhere inside each coarse cell. Taking the minimum keeps
+		# the estimate below whatever a fine path through there would really pay, while still telling
+		# the search that threading a narrow gap costs more than open water. Without this the
+		# estimate ignores the soft penalty entirely and stays a factor of three too low.
+		shortfall = np.clip((field.soft - field.dist[:usable, :usable]) / (field.soft - field.inflate), 0.0, 1.0)
+		penalty = np.where(occupied[:usable, :usable], np.inf, SOFT_WEIGHT * shortfall * shortfall)
+		soft = penalty.reshape(n, self.factor, n, self.factor).min(axis=(1, 3))
+
+		return blocked, soft
+
+	def to_cell(self, x, y):
+		return int(math.floor((x - self.origin_x) / self.res)), int(math.floor((y - self.origin_y) / self.res))
+
+	def dijkstra(self, blocked, soft, gx, gy):
+		rows, cols = blocked.shape
+		goal = self.to_cell(gx, gy)
+
+		cost = {}
+		queue = [(0.0, goal)]
+		while queue:
+			distance, cell = heapq.heappop(queue)
+			if cell in cost:
+				continue
+
+			cost[cell] = distance
+			here = soft[cell[1], cell[0]]
+			for ox, oy in NEIGHBOURS:
+				neighbour = (cell[0] + ox, cell[1] + oy)
+				if not (0 <= neighbour[0] < cols and 0 <= neighbour[1] < rows):
+					continue
+				if neighbour in cost or blocked[neighbour[1], neighbour[0]]:
+					continue
+
+				cheapest = min(here, soft[neighbour[1], neighbour[0]])
+				step = math.hypot(ox, oy) * self.res * (1.0 + cheapest)
+				heapq.heappush(queue, (distance + step, neighbour))
+
+		return cost
+
+	def estimate(self, x, y):
+		distance = self.cost_to_goal.get(self.to_cell(x, y))
+		if distance is None:
+			return float("inf")
+
+		return distance / OCTILE_OVERSHOOT

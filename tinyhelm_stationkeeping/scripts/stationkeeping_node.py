@@ -192,9 +192,9 @@ class StationKeepingNode:
 		min_angle = math.radians(5)
 		max_angle = math.radians(20)
 
-		if heading_error > min_angle:
+		if abs(heading_error) > min_angle:
 			# Map heading_error from [min_angle, max_angle] -> [1, 0]
-			scale = 1.0 - clamp((heading_error - min_angle) / (max_angle - min_angle), 0.0, 1.0)
+			scale = 1.0 - clamp((abs(heading_error) - min_angle) / (max_angle - min_angle), 0.0, 1.0)
 			linear_vel *= scale
 
 		if not forward:
