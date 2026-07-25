@@ -22,27 +22,27 @@ tinyhelm_core:
 
   controllers:
     waypoints:
-      path: /waypoints/_path        #Path
-      revise: /waypoints/_revise    #Path, revised plan: first pose is the line anchor, not a goal
-      pose: /waypoints/_goal        #PoseStamped
-      stop: /waypoints/_clear       #Empty
-      cmd_vel: /cmd_vel_waypoints   #Twist
-      status: /waypoints/_status    #ControllerStatus
-      markers: /waypoints/_markers  #MarkerArray
+      path: /waypoints/_path              #Path (out), mission or revision, it picks up wherever it already is
+      stop: /waypoints/_clear             #Empty (out)
+      cmd_vel: /cmd_vel_waypoints         #Twist
+      status: /waypoints/_status          #ControllerStatus (in)
+      markers: /waypoints/_markers        #MarkerArray (in)
+      current_path: /waypoints/_plan      #Path (in), what it is actually following, relayed to the monitors
 
     stationkeeping:
-      pose: /stationkeeping/_pose              #PoseStamped
-      stop: /stationkeeping/_clear             #Empty
-      cmd_vel: /cmd_vel_stationkeeping         #Twist
-      status: /stationkeeping/_status          #ControllerStatus
-      markers: /stationkeeping/_markers  #MarkerArray
+      pose: /stationkeeping/_pose         #PoseStamped (out)
+      stop: /stationkeeping/_clear        #Empty (out)
+      cmd_vel: /cmd_vel_stationkeeping    #Twist
+      status: /stationkeeping/_status     #ControllerStatus (in)
+      markers: /stationkeeping/_markers   #MarkerArray (in)
 
   monitors:
     obstacles:
-      mission: /tinyhelm/mission                #Path (out), mirror of the active strategic plan
-      correction: /obstacle_planner/path        #Path (in), proposed corrected course
-      status: /tinyhelm/monitor/obstacles       #MonitorStatus
-      markers: /obstacles/_markers              #MarkerArray
+      mission_in: /obstacles/_mission_in              #Path (out), the mission as executed, including any transit leg
+      current_path_in: /obstacles/_current_path_in    #Path (out), relay of what the active controller is following
+      revised_path_out: /obstacles/_revised_path_out  #Path (in), proposed refinement of the current path
+      status: /obstacles/_status                      #MonitorStatus (in)
+      markers: /obstacles/_markers                    #MarkerArray (in)
 
   behaviour_topics:
     goal:

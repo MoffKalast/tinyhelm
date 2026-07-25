@@ -6,6 +6,7 @@ import tf
 import tf2_ros
 
 from utils import *
+from utils import point_segment_distance
 from markers import DebugMarkers
 
 from geometry_msgs.msg import Twist
@@ -25,27 +26,31 @@ ROBOT_FRAME = "base_link"
 PLANNING_FRAME = "local"
 
 class GoalServer:
+	"""Owns the route and which leg of it is being followed.
 
-	def __init__(self, tf2_buffer, set_status, update_plan):
-		self.start_goal = None
-		self.end_goal = None
+	A path arrives with no indication of whether it is a new mission, the same one re-sent, or a
+	revision of the one in progress, so where to pick it up is worked out geometrically instead.
+	Both tests resolve to the earliest candidate: a survey pattern's parallel lines sit within a
+	divergence of each other, so preferring the furthest along would let one detour around a speck
+	of an obstacle skip half the mission. Repeating a leg is recoverable, skipping one is not."""
+
+	def __init__(self, tf2_buffer, set_status, update_plan, get_thresholds):
 		self.tf2_buffer = tf2_buffer
 		self.set_status = set_status
 		self.update_plan = update_plan
-
-		self.simple_goal_sub = rospy.Subscriber("/waypoints/_path", Path, self.route_callback)
-		self.simple_goal_sub = rospy.Subscriber("/waypoints/_goal", PoseStamped, self.goal_callback)
-		self.revise_sub = rospy.Subscriber("/waypoints/_revise", Path, self.revise_callback)
-		self.clear_goals_sub = rospy.Subscriber("/waypoints/_clear", Empty, self.reset)
-
-		self.vertical_pub = rospy.Publisher("/waypoints/_vertical_target", Float32, queue_size=1)
+		self.get_thresholds = get_thresholds
 
 		self.start_goal = None
 		self.end_goal = None
 		self.route = []
 		self.route_index = 0
 
-	def reset(self,msg):
+		self.path_sub = rospy.Subscriber("/waypoints/_path", Path, self.path_callback)
+		self.clear_goals_sub = rospy.Subscriber("/waypoints/_clear", Empty, self.reset)
+
+		self.vertical_pub = rospy.Publisher("/waypoints/_vertical_target", Float32, queue_size=1)
+
+	def reset(self, msg):
 		self.start_goal = None
 		self.end_goal = None
 		self.route = []
@@ -53,119 +58,125 @@ class GoalServer:
 		self.update_plan()
 		self.set_status(ControllerStatus.ESTOPPED, "Planner stopped.")
 
-	def goal_callback(self, goal):
-		self.route = []
-		self.route_index = 0
-		self.process_goal(goal)
-		self.update_plan()
+	def publish_vertical_target(self):
+		msg = Float32()
+		msg.data = self.end_goal.position.z
+		self.vertical_pub.publish(msg)
 
-		self.set_status(ControllerStatus.ACTIVE, "Navigation started!")
+	def robot_pose(self):
+		try:
+			return transform_to_pose(self.tf2_buffer.lookup_transform(PLANNING_FRAME, ROBOT_FRAME, rospy.Time(0)))
+		except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
+			rospy.logwarn("TF2 exception: %s", e)
+			return None
 
-	def route_callback(self, msg):
-		rospy.loginfo("New route received.")
+	def to_planning_frame(self, msg: Path):
+		"""The whole path is transformed once here, so everything downstream can assume the planning
+		frame and compare poses against each other without checking headers again."""
+		frame = msg.header.frame_id
+		if not frame or frame == PLANNING_FRAME:
+			return list(msg.poses)
 
+		try:
+			transform = self.tf2_buffer.lookup_transform(PLANNING_FRAME, frame, rospy.Time(0))
+		except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
+			rospy.logwarn("Cannot transform path from frame %s: %s", frame, e)
+			return None
+
+		rospy.loginfo("Path received in %s frame, transformed to %s.", frame, PLANNING_FRAME)
+		return [do_transform_pose(pose, transform) for pose in msg.poses]
+
+	def select_anchor_index(self, poses):
+		"""Index of the pose to treat as the leg anchor, or None when the vessel is not on the path
+		at all and has to transit to the start of it."""
+		pose = self.robot_pose()
+		if pose is None:
+			return None
+
+		rx, ry = pose.position.x, pose.position.y
+		reach, divergence = self.get_thresholds()
+
+		# Standing on a waypoint. Earliest occurrence, so a path that revisits a position does not
+		# start at the wrong one: goal_and_return begins and ends where we are right now
+		for i, candidate in enumerate(poses):
+			p = candidate.pose.position
+			if math.hypot(p.x - rx, p.y - ry) <= reach:
+				return min(i, len(poses) - 2)
+
+		# Not on a waypoint, so already somewhere along a leg
+		for i in range(len(poses) - 1):
+			a = poses[i].pose.position
+			b = poses[i + 1].pose.position
+			if point_segment_distance(rx, ry, a.x, a.y, b.x, b.y) <= divergence:
+				return i
+
+		return None
+
+	def begin_transit(self, target):
+		"""Anchor the leg at the vessel, for a path it is not on yet."""
+		pose = self.robot_pose()
+		if pose is None:
+			return False
+
+		self.start_goal = pose
+		self.end_goal = target
+		self.publish_vertical_target()
+		return True
+
+	def path_callback(self, msg: Path):
 		if len(msg.poses) == 0:
-			rospy.loginfo("Empty route, stopping.")
+			rospy.loginfo("Empty path, stopping.")
 			self.reset(None)
 			return
 
-		self.route = msg.poses
-		self.route_index = 0
-		self.process_goal(self.route[0])
-		self.update_plan()
-
-		self.set_status(ControllerStatus.ACTIVE, "Navigation started!")
-
-	def revise_callback(self, msg):
-		if len(msg.poses) < 2:
-			rospy.logwarn("Revised plan needs at least two poses, ignoring.")
+		poses = self.to_planning_frame(msg)
+		if poses is None:
 			return
 
-		frame = msg.header.frame_id
-		if frame and frame != PLANNING_FRAME:
-			try:
-				transform = self.tf2_buffer.lookup_transform(PLANNING_FRAME, frame, rospy.Time(0))
-				msg.poses = [do_transform_pose(p, transform) for p in msg.poses]
-			except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
-				rospy.logwarn("Cannot transform revised plan from frame %s: %s", frame, e)
+		self.route = poses
+		anchor = self.select_anchor_index(poses) if len(poses) >= 2 else None
+
+		rospy.loginfo("------------------")
+
+		if anchor is None:
+			self.route_index = 0
+			if not self.begin_transit(self.route[0].pose):
 				return
+			rospy.loginfo("Path of %d poses received, transiting to its start.", len(poses))
+		else:
+			self.route_index = anchor + 1
+			self.start_goal = self.route[anchor].pose
+			self.end_goal = self.route[anchor + 1].pose
+			self.publish_vertical_target()
+			rospy.loginfo("Path of %d poses received, picking up at leg %d.", len(poses), anchor)
 
-		# A revision differs from a new route: the first pose is the line anchor of the leg
-		# in progress, not a goal to visit, so there is no demand to backtrack to it
-		rospy.loginfo("Plan revised: %d poses.", len(msg.poses))
-		self.route = msg.poses
-		self.route_index = 1
-		self.start_goal = msg.poses[0].pose
-		self.end_goal = msg.poses[1].pose
-
-		vert_msg = Float32()
-		vert_msg.data = self.end_goal.position.z
-		self.vertical_pub.publish(vert_msg)
+		rospy.loginfo("Goal: X: %f, Y: %f, Z: %f", self.end_goal.position.x, self.end_goal.position.y, self.end_goal.position.z)
 
 		self.update_plan()
-		self.set_status(ControllerStatus.ACTIVE, "Plan revised.")
+		self.set_status(ControllerStatus.ACTIVE, f"Following leg {self.route_index - 1} of {len(poses) - 1}.")
 
 	def get_goals(self):
 		return self.start_goal, self.end_goal
-	
+
 	def goal_reached(self):
-		if len(self.route) > 0:
+		if self.route_index < len(self.route) - 1:
 			rospy.loginfo(f"Goal #{self.route_index} reached.")
-			if self.route_index < len(self.route)-1:
-				self.route_index +=1
-				self.process_goal(self.route[self.route_index])
-				self.set_status(ControllerStatus.ACTIVE, f"Goal #{self.route_index} reached, continuing route.")
-			else:
-				rospy.loginfo("-> Route finished.")
-				self.start_goal = None
-				self.end_goal = None
-				self.set_status(ControllerStatus.FINISHED, "Route finished.")
+			self.route_index += 1
+			self.set_goal_pair(self.route[self.route_index].pose)
+			self.set_status(ControllerStatus.ACTIVE, f"Goal #{self.route_index} reached, continuing route.")
 		else:
-			rospy.loginfo("Simple goal reached.")
+			rospy.loginfo("-> Route finished.")
 			self.start_goal = None
 			self.end_goal = None
-			self.set_status(ControllerStatus.FINISHED, "Simple goal reached.")
+			self.set_status(ControllerStatus.FINISHED, "Route finished.")
 
 		self.update_plan()
-
 
 	def set_goal_pair(self, endgoal):
-		if len(self.route) == 0 or self.route_index == 0:
-			try:
-				self.start_goal = transform_to_pose(self.tf2_buffer.lookup_transform(PLANNING_FRAME, ROBOT_FRAME, rospy.Time(0)))
-				self.end_goal = endgoal
-			except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
-				rospy.logwarn("TF2 exception: %s", e)
-		else:
-			self.start_goal = self.end_goal
-			self.end_goal = endgoal
-
-		vert_msg = Float32()
-		vert_msg.data = self.end_goal.position.z
-		self.vertical_pub.publish(vert_msg)
-
+		self.start_goal = self.end_goal
+		self.end_goal = endgoal
+		self.publish_vertical_target()
 		self.update_plan()
-
-	def process_goal(self, goal):
-		if PLANNING_FRAME == goal.header.frame_id:
-			rospy.loginfo("------------------")
-			rospy.loginfo("Received goal in planning ("+PLANNING_FRAME+") frame.")
-			rospy.loginfo("Position: X: %f, Y: %f, Z: %f", goal.pose.position.x, goal.pose.position.y, goal.pose.position.z)
-			rospy.loginfo("Orientation: X: %f, Y: %f, Z: %f, W: %f", goal.pose.orientation.x, goal.pose.orientation.y, goal.pose.orientation.z, goal.pose.orientation.w)
-			self.set_goal_pair(goal.pose)
-		else:
-			try:
-				transform = self.tf2_buffer.lookup_transform(PLANNING_FRAME, goal.header.frame_id, rospy.Time(0))
-				goal_transformed = do_transform_pose(goal, transform)
-				self.set_goal_pair(goal_transformed.pose)
-				rospy.loginfo("------------------")
-				rospy.loginfo("Received goal in "+goal.header.frame_id+" frame, transformed to "+PLANNING_FRAME+".")
-				rospy.loginfo("Position: X: %f, Y: %f, Z: %f", goal_transformed.pose.position.x, goal_transformed.pose.position.y, goal_transformed.pose.position.z)
-				rospy.loginfo("Orientation: X: %f, Y: %f, Z: %f, W: %f", goal_transformed.pose.orientation.x, goal_transformed.pose.orientation.y, goal_transformed.pose.orientation.z, goal_transformed.pose.orientation.w)
-
-			except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
-				rospy.logwarn("TF2 exception: %s", e)
-				return
 
 class LineFollowingController:
 	def __init__(self):
@@ -218,7 +229,7 @@ class LineFollowingController:
 			rospy.get_param('~D', 65.0)
 		)
 
-		self.goal_server = GoalServer(self.tf2_buffer, self.set_status, self.update_plan)
+		self.goal_server = GoalServer(self.tf2_buffer, self.set_status, self.update_plan, lambda: (self.MIN_GOAL_XY_DIST, self.LINE_DIVERGENCE))
 		self.active = False
 
 		self.reconfigure_server = DynamicReconfigureServer(WaypointsConfig, self.dynamic_reconfigure_callback)
@@ -382,34 +393,20 @@ class LineFollowingController:
 		msg = Path()
 		msg.header.frame_id = PLANNING_FRAME
 
-		start_goal, end_goal = self.goal_server.get_goals()
+		start_goal, _ = self.goal_server.get_goals()
 
-		if start_goal is None:
+		if start_goal is None or not self.goal_server.route:
 			self.plan_pub.publish(Path())
 			return
 
-		if len(self.goal_server.route) > 0:
-			start = PoseStamped()
-			start.header.frame_id = PLANNING_FRAME
-			start.pose = start_goal
+		# Anchor of the leg in progress followed by everything still to visit, which is what the
+		# monitors watch and what a revision of this plan has to line up with
+		start = PoseStamped()
+		start.header.frame_id = PLANNING_FRAME
+		start.pose = start_goal
 
-			msg.poses.append(start)
-			msg.poses.extend(self.goal_server.route[self.goal_server.route_index:])
-
-		else:
-			if end_goal is None:
-				self.plan_pub.publish(Path())
-				return
-
-			start_stamped = PoseStamped()
-			start_stamped.header.frame_id = PLANNING_FRAME
-			start_stamped.pose = start_goal
-
-			end_stamped = PoseStamped()
-			end_stamped.header.frame_id = PLANNING_FRAME
-			end_stamped.pose = end_goal
-
-			msg.poses = [start_stamped, end_stamped]
+		msg.poses.append(start)
+		msg.poses.extend(self.goal_server.route[self.goal_server.route_index:])
 
 		self.plan_pub.publish(msg)
 

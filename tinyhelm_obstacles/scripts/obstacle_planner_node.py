@@ -28,19 +28,18 @@ STATUS_LEVELS = {
 
 
 class ObstaclePlannerNode:
-	"""Observes the strategic mission (/tinyhelm/mission) and the line planner's remaining
-	tactical path, maintains a decaying obstacle grid around the vessel, and when the
-	tactical corridor is intruded plans a detour with Theta* through the remaining
-	strategic waypoints. Space beyond the loaded grid window is treated as clear. This
-	node owns everything ROS: topics, TF, message conversion and the tick loop; all
-	planning logic lives in CorridorPlanner. It never commands anything: it publishes a
-	proposed path and a MonitorStatus, and the helm core decides what to do with them."""
+	"""Observes the mission being executed and the path the vessel is currently following, both
+	fed in by the helm, maintains a decaying obstacle grid around the vessel, and when the
+	current corridor is intruded plans a detour with Theta* through the remaining mission
+	waypoints. Space beyond the loaded grid window is treated as clear. This node owns
+	everything ROS: topics, TF, message conversion and the tick loop; all planning logic lives
+	in CorridorPlanner. It never commands anything: it publishes a revised path and a
+	MonitorStatus, and the helm core decides what to do with them."""
 
 	def __init__(self):
 		self.planning_frame = rospy.get_param("/planning_frame", "local")
 		self.robot_frame = rospy.get_param("/robot_frame", "base_link")
 
-		self.tactical_plan_topic = rospy.get_param("~tactical_plan_topic", "/waypoints/_plan")
 		self.divergence_param = rospy.get_param("~divergence_param", "/tinyhelm_waypoints/max_line_divergence")
 
 		self.res = rospy.get_param("~resolution", 0.5)
@@ -89,14 +88,14 @@ class ObstaclePlannerNode:
 		rospy.Subscriber("/unreliable_cloud", PointCloud2, self.unreliable_hits_callback, queue_size=5)
 		rospy.Subscriber("/free_cloud", PointCloud2, self.free_hits_callback, queue_size=5)
 
-		rospy.Subscriber("/obstacle_grid/clear", Empty, self.grid_clear_callback, queue_size=1)
-		rospy.Subscriber("/tinyhelm/mission", Path, self.mission_callback, queue_size=1)
-		rospy.Subscriber(self.tactical_plan_topic, Path, self.tactical_callback, queue_size=1)
+		rospy.Subscriber("/obstacles/_clear_grid", Empty, self.grid_clear_callback, queue_size=1)
+		rospy.Subscriber("/obstacles/_mission_in", Path, self.mission_callback, queue_size=1)
+		rospy.Subscriber("/obstacles/_current_path_in", Path, self.current_path_callback, queue_size=1)
 
-		self.path_pub = rospy.Publisher("/obstacle_planner/path", Path, queue_size=1, latch=True)
-		self.remaining_pub = rospy.Publisher("/obstacle_planner/remaining", Path, queue_size=1, latch=True)
-		self.status_pub = rospy.Publisher("/tinyhelm/monitor/obstacles", MonitorStatus, queue_size=5, latch=True)
-		self.local_grid_pub = rospy.Publisher("/obstacle_planner/grid_local", OccupancyGrid, queue_size=1, latch=True)
+		self.path_pub = rospy.Publisher("/obstacles/_revised_path_out", Path, queue_size=1, latch=True)
+		self.status_pub = rospy.Publisher("/obstacles/_status", MonitorStatus, queue_size=5, latch=True)
+		self.remaining_pub = rospy.Publisher("/obstacles/_remaining", Path, queue_size=1, latch=True)
+		self.local_grid_pub = rospy.Publisher("/obstacles/_grid", OccupancyGrid, queue_size=1, latch=True)
 
 		# Placeholder so the helm's marker aggregation has something to subscribe to; nothing is
 		# published on it yet, the geofence and proposed detour are the obvious first candidates
@@ -176,8 +175,8 @@ class ObstaclePlannerNode:
 		self.blocked = False
 		self.planner.set_mission([(p.pose.position.x, p.pose.position.y, p.pose.position.z) for p in poses])
 
-	def tactical_callback(self, msg):
-		self.planner.set_tactical([(p.pose.position.x, p.pose.position.y, p.pose.position.z) for p in msg.poses])
+	def current_path_callback(self, msg):
+		self.planner.set_current_path([(p.pose.position.x, p.pose.position.y, p.pose.position.z) for p in msg.poses])
 
 	def get_robot_pose(self):
 		try:
@@ -219,9 +218,9 @@ class ObstaclePlannerNode:
 		fence = self.planner.build_geofence(rx, ry)
 		self.build_local_field(rx, ry, fence)
 
-		# Nothing to monitor until the controller reports a tactical plan; the helm feeds
-		# the mission to the controller directly, so there is no bootstrap replan
-		if len(self.planner.tactical) < 2:
+		# Nothing to monitor until the helm relays a current path; the mission is handed to the
+		# controller directly, so there is no bootstrap replan
+		if len(self.planner.current_path) < 2:
 			return
 
 		if self.planner.corridor_clear(self.local_field):

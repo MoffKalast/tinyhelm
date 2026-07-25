@@ -13,9 +13,6 @@ tinyhelm_scan_to_unreliable_cloud:
     cloud_topic: /unreliable_cloud
 
 tinyhelm_obstacles:
-    # Tactical plan published by the active controller, watched for obstacles.
-    tactical_plan_topic: /waypoints/_plan
-
     # Full param path the usable corridor width is read from at runtime, has to point at the active controller.
     divergence_param: /tinyhelm_waypoints/max_line_divergence
 

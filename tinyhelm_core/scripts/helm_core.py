@@ -25,7 +25,7 @@ from config_loader import ConfigLoader
 
 from tinyhelm_core.msg import ControllerStatus, MonitorStatus
 
-from util import get_pose_in_frame
+from util import get_pose_in_frame, strip_repeated_poses
 
 STATUS_NAMES = {
     ControllerStatus.IDLE: "IDLE",
@@ -89,9 +89,9 @@ class HelmCore:
 
 		self.manual_home = None
 
-		self.controllers = self.cfg_loader.parse_controllers(self.controller_status_callback, self.markers_callback)
+		self.controllers = self.cfg_loader.parse_controllers(self.controller_status_callback, self.markers_callback, self.current_path_callback)
 		self.behaviours = self.cfg_loader.parse_behaviours(self.behaviour_callback)
-		self.monitors = self.cfg_loader.parse_monitors(self.monitor_status_callback, self.monitor_correction_callback, self.monitor_markers_callback)
+		self.monitors = self.cfg_loader.parse_monitors(self.monitor_status_callback, self.monitor_revised_path_callback, self.monitor_markers_callback)
 
 		self.estop_sub = rospy.Subscriber(self.estop_topic, Empty, self.estop_callback, queue_size=1)
 		self.teleop_override_sub = rospy.Subscriber("/teleop_override_active", Bool, self.teleop_override, queue_size=1)
@@ -179,7 +179,10 @@ class HelmCore:
 		rospy.loginfo(f"Received command for {behaviour_name}, activating controller...")
 
 		#process the plan
-		robot_pose: PoseStamped = get_pose_in_frame(self.tf2_buffer, self.PLANNING_FRAME, self.ROBOT_FRAME)
+		robot_pose = self.wait_for_robot_pose()
+		if robot_pose is None:
+			return
+
 		intention: Intention = get_plan(robot_pose, msg)
 
 		if intention is None or intention.plan is None:
@@ -198,22 +201,63 @@ class HelmCore:
 
 		self.set_intention(intention)
 
+	def wait_for_robot_pose(self) -> Optional[PoseStamped]:
+		"""Waits for TF rather than abandoning the plan. A gap here is almost always a transient
+		localisation dropout and the vessel is holding position through it anyway, so retrying is
+		better than failing a mission over it. Gives up only on shutdown or on being disabled,
+		since publishing a plan the operator has since called off would be worse than nothing."""
+		while not rospy.is_shutdown():
+			if not self.enabled:
+				rospy.logwarn("Helm was disabled while waiting for a transform, dropping the plan.")
+				return None
+
+			try:
+				return get_pose_in_frame(self.tf2_buffer, self.PLANNING_FRAME, self.ROBOT_FRAME)
+			except Exception as e:
+				rospy.logwarn_throttle(5.0, f"Waiting for {self.PLANNING_FRAME} -> {self.ROBOT_FRAME}: {e}")
+				rospy.sleep(0.2)
+
+		return None
+
+	def anchored_plan(self, intention: Intention):
+		"""Prepends the vessel's position so the run out to the first waypoint is a real leg of the
+		plan, which both keeps the controller from having to invent an anchor of its own and puts
+		that transit in front of the monitors, since it is water like any other and may need
+		avoiding. Taken fresh on every publish: a RESTART re-sends the same Intention, so an anchor
+		captured when a loiter began would by now be a phantom waypoint hours behind us."""
+		plan = intention.plan
+		if not intention.bootstrap or not isinstance(plan, Path) or not plan.poses:
+			return plan
+
+		anchor = self.wait_for_robot_pose()
+		if anchor is None:
+			return None
+
+		anchored = Path()
+		anchored.header = plan.header
+		anchored.poses = strip_repeated_poses([anchor] + list(plan.poses))
+		return anchored
+
 	def set_intention(self, intention: Intention):
 
 		behaviour_name = intention.name
 		controller_name = self.behaviours[behaviour_name]['controller']	
 		controller = self.controllers[controller_name]
 
+		plan = self.anchored_plan(intention)
+		if plan is None:
+			return
+
 		# Let's-a gooooo
-		if isinstance(intention.plan, PoseStamped):
+		if isinstance(plan, PoseStamped):
 			if controller.get('pose_pub'):
-				controller['pose_pub'].publish(intention.plan)
+				controller['pose_pub'].publish(plan)
 			else:
 				rospy.logerr(f"{behaviour_name}({controller_name}) cannot receive single goals.")
 				return
-		elif isinstance(intention.plan, Path):
+		elif isinstance(plan, Path):
 			if controller.get('path_pub'):
-				controller['path_pub'].publish(intention.plan)
+				controller['path_pub'].publish(plan)
 			else:
 				rospy.logerr(f"{behaviour_name}({controller_name}) cannot receive paths.")
 				return
@@ -221,15 +265,17 @@ class HelmCore:
 			rospy.logerr(f"{behaviour_name}({controller_name}) sent incompatible plan object.")
 			return
 
-		# store current behaviour metadata
+		# store current behaviour metadata. The Intention keeps its original plan so a RESTART
+		# re-anchors from scratch; executed_plan is what actually went out
 		self.current_behavior = {
 			'name': behaviour_name,
 			'controller': controller_name,
-			'intention': intention
+			'intention': intention,
+			'executed_plan': plan
 		}
 		self.active_controller = controller_name
 		self.set_cmd_vel_mux(controller_name)
-		self.publish_mission(intention.plan)
+		self.publish_mission(plan)
 
 	def hold_reach(self):
 		"""Summed bound on how far an automatic hold target may sit from the vessel. The params
@@ -253,7 +299,7 @@ class HelmCore:
 		return do_transform_pose(pose, transform)
 
 	def within_hold_reach(self, goal: PoseStamped, fallback_frame: str) -> bool:
-		"""A monitor correction can truncate the plan or substitute its last waypoint, so the
+		"""A monitor revision can truncate the plan or substitute its last waypoint, so the
 		stored plan may end somewhere the vessel never went, possibly inside an obstacle. An
 		automatic hold trusts that target only while the vessel is near it. Compared in XY only,
 		since both bounds are horizontal and altitude may be ignored entirely."""
@@ -277,19 +323,33 @@ class HelmCore:
 		return True
 
 	def publish_mission(self, plan):
-		"""Mirrors the active strategic plan to all monitors; an empty Path means nothing to watch."""
+		"""Mirrors the mission being executed to all monitors; an empty Path means nothing to watch.
+		The current path is emptied alongside it, so a monitor cannot keep judging the previous
+		mission's course until the controller gets round to publishing its first plan."""
 		msg = plan if isinstance(plan, Path) else Path()
 		for m in self.monitors.values():
 			m['revision_pending'] = False
-			m['last_correction'] = None
+			m['last_revised_path'] = None
 			if m.get('mission_pub'):
 				m['mission_pub'].publish(msg)
+			if m.get('current_path_pub'):
+				m['current_path_pub'].publish(Path())
 
-	def monitor_correction_callback(self, monitor_name: str, msg: Path):
+	def current_path_callback(self, controller_name: str, msg: Path):
+		"""Monitors watch what is actually being steered rather than reaching into a controller's
+		topics themselves, so the active controller's own plan is relayed on to them here."""
+		if controller_name != self.active_controller:
+			return
+
+		for m in self.monitors.values():
+			if m.get('current_path_pub'):
+				m['current_path_pub'].publish(msg)
+
+	def monitor_revised_path_callback(self, monitor_name: str, msg: Path):
 		if monitor_name not in self.monitors:
 			return
-		self.monitors[monitor_name]['last_correction'] = msg
-		# the REPLAN status can outrun its correction across topics; fulfill the request now
+		self.monitors[monitor_name]['last_revised_path'] = msg
+		# the REPLAN status can outrun its revision across topics; fulfill the request now
 		if self.monitors[monitor_name].get('revision_pending'):
 			self.revise_plan(monitor_name)
 
@@ -308,20 +368,22 @@ class HelmCore:
 			self.behaviour_callback('stationkeeping', None)
 
 	def revise_plan(self, monitor_name: str):
-		correction = self.monitors[monitor_name].get('last_correction')
-		if correction is None or len(correction.poses) < 2:
+		revision = self.monitors[monitor_name].get('last_revised_path')
+		if revision is None or len(revision.poses) < 2:
 			self.monitors[monitor_name]['revision_pending'] = True
 			return
 
 		controller = self.controllers.get(self.active_controller, {})
-		revise_pub = controller.get('revise_pub')
-		if not revise_pub:
+		path_pub = controller.get('path_pub')
+		if not path_pub:
 			rospy.logwarn_throttle(5.0, f"Monitor {monitor_name} proposed a revision but the active controller cannot accept one.")
 			return
 
-		revise_pub.publish(correction)
+		# The controller works out where to rejoin a path by itself, so a revision needs no topic of
+		# its own; it is just another path that happens to start next to us
+		path_pub.publish(revision)
 		# consume it so a repeated REPLAN status doesn't re-send an identical revision
-		self.monitors[monitor_name]['last_correction'] = None
+		self.monitors[monitor_name]['last_revised_path'] = None
 		self.monitors[monitor_name]['revision_pending'] = False
 
 	def controller_status_callback(self, controller_name: str, msg: ControllerStatus):
@@ -350,9 +412,10 @@ class HelmCore:
 		if msg.status == ControllerStatus.FINISHED:
 			if intention.on_finish == StateAction.HOLD_POSITION:
 				rospy.loginfo("Finished plan, switching to stationkeeping.")
+				executed = self.current_behavior.get('executed_plan')
 
-				if isinstance(intention.plan, Path) and self.within_hold_reach(intention.plan.poses[-1], intention.plan.header.frame_id):
-					self.behaviour_callback('stationkeeping', intention.plan.poses[-1]) #stop at last waypoint exactly
+				if isinstance(executed, Path) and executed.poses and self.within_hold_reach(executed.poses[-1], executed.header.frame_id):
+					self.behaviour_callback('stationkeeping', executed.poses[-1]) #stop at last waypoint exactly
 				else:
 					self.behaviour_callback('stationkeeping', None)# just stay where you are
 

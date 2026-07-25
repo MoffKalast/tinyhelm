@@ -19,7 +19,7 @@ class CorridorPlanner:
 		self.effective_inflate = config["inflate_radius"]
 
 		self.mission = []
-		self.tactical = []
+		self.current_path = []
 		self.remaining = []
 		self.next_wp_index = 0
 		self.unreachable_counts = {}
@@ -33,11 +33,12 @@ class CorridorPlanner:
 		self.unreachable_counts.clear()
 		self.skipped.clear()
 		self.last_published = []
+		self.current_path = []
 		if not self.mission:
 			self.status_cb(OK, "No active mission.")
 
-	def set_tactical(self, points):
-		self.tactical = list(points)
+	def set_current_path(self, points):
+		self.current_path = list(points)
 
 	def update_remaining(self, rx, ry):
 		"""Strategic waypoints are always visited in order (detours never skip them), so
@@ -70,7 +71,7 @@ class CorridorPlanner:
 		return fence
 
 	def corridor_point_blocked(self, field, x, y):
-		"""Trip threshold shared by the tactical corridor check and the correction
+		"""Trip threshold shared by the current corridor check and the revision
 		validity check; corrections are planned with effective_inflate + res clearance,
 		so the band between planning margin and trip threshold gives hysteresis against
 		replan oscillation. Outside the loaded window the field reports infinite
@@ -90,9 +91,9 @@ class CorridorPlanner:
 		return False
 
 	def corridor_clear(self, field):
-		for i in range(1, len(self.tactical)):
-			x1, y1, _ = self.tactical[i - 1]
-			x2, y2, _ = self.tactical[i]
+		for i in range(1, len(self.current_path)):
+			x1, y1, _ = self.current_path[i - 1]
+			x2, y2, _ = self.current_path[i]
 			if self.segment_blocked(field, x1, y1, x2, y2):
 				return False
 		return True

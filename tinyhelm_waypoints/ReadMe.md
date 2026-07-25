@@ -53,11 +53,13 @@ Here's a diagram showing the possible states of the planner, and which distances
 
 ## Subscribed Topics
 
-- `/waypoints/_goal` (PoseStamped), takes the current position as the starting point and moves towards the goal
+- `/waypoints/_path` (Path), the route to follow, taking each two consecutive poses as a line to track
 
-- `/waypoints/_path` (Path), takes each two consecutive points and navigates along the line between them
+  A path carries no indication of whether it is a new mission, the same one re-sent, or a revision of the one in progress, so where to pick it up is decided geometrically. If any pose is within `xy_distance_threshold` the vessel is standing on a waypoint and that leg is resumed; otherwise the first leg whose segment lies within `max_line_divergence` is resumed; failing both, the vessel transits from where it is to the first pose.
 
-- `/waypoints/_revise` (Path), replaces the remaining route with a corrected one, where the first pose is the line anchor rather than a goal
+  Both tests take the **earliest** candidate. A survey pattern's parallel lines can sit within one divergence of each other, so preferring the furthest along would let a single detour skip most of the mission. Repeating a leg costs time, skipping one loses coverage.
+
+  The helm anchors every path at the vessel's current position before sending it, so the first leg is the real transit out to the first waypoint rather than something the controller has to invent.
 
 - `/waypoints/_clear` (Empty), stops all movement immediately
 
@@ -69,7 +71,7 @@ Here's a diagram showing the possible states of the planner, and which distances
 
 - `/waypoints/_active` (Bool), latched navigation status
 
-- `/waypoints/_plan` (Path), latched nav plan, also the entire route if given
+- `/waypoints/_plan` (Path), latched, the anchor of the leg in progress followed by everything still to visit. The helm relays this to the monitors as the course actually being steered
 
 - `/waypoints/_markers` (MarkerArray), publishes the debug markers shown above, throttled to 5 Hz
 

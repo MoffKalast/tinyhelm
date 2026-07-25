@@ -14,27 +14,23 @@ class ConfigLoader:
 		rospy.logdebug("Loaded parameters for tinyhelm_core:")
 		rospy.logdebug(pprint.pformat(self.params))
 
-	def parse_controllers(self, controller_status_callback, markers_callback):
+	def parse_controllers(self, controller_status_callback, markers_callback, current_path_callback):
 		controllers = {}
 		ctrl_params = self.params.get("controllers", {})
 		for name, cfg in ctrl_params.items():
 			c = {}
 			c['path_topic'] = cfg.get('path')         # Path (nav_msgs/Path)
-			c['revise_topic'] = cfg.get('revise')     # Path, revision of the plan in progress
 			c['pose_topic'] = cfg.get('pose')         # PoseStamped
 			c['stop_topic'] = cfg.get('stop')         # std_msgs/Empty pub
 			c['cmd_vel'] = cfg.get('cmd_vel')         # string topic for mux selector
 			c['status_topic'] = cfg.get('status')   # bool topic that reports controller healthy
 			c['markers_topic'] = cfg.get('markers')   # MarkerArray emitted by controller
+			c['current_path_topic'] = cfg.get('current_path')  # Path sub, what the controller is actually following
 
 			if c['path_topic']:
 				c['path_pub'] = rospy.Publisher(c['path_topic'], Path, queue_size=1, latch=False)
 				rospy.loginfo(f"Controller[{name}] will publish path -> {c['path_topic']}")
 
-			if c['revise_topic']:
-				c['revise_pub'] = rospy.Publisher(c['revise_topic'], Path, queue_size=1, latch=False)
-				rospy.loginfo(f"Controller[{name}] will publish plan revisions -> {c['revise_topic']}")
-			
 			if c['pose_topic']:
 				c['pose_pub'] = rospy.Publisher(c['pose_topic'], PoseStamped, queue_size=1, latch=False)
 				rospy.loginfo(f"Controller[{name}] will publish pose -> {c['pose_topic']}")
@@ -57,28 +53,37 @@ class ConfigLoader:
 			else:
 				rospy.logwarn(f"Controller[{name}] does not have a marker topic?")
 
+			if c['current_path_topic']:
+				c['current_path_sub'] = rospy.Subscriber(c['current_path_topic'], Path, lambda msg, nm=name: current_path_callback(nm, msg), queue_size=1)
+				rospy.loginfo(f"Controller[{name}] current path <- {c['current_path_topic']}")
+
 			controllers[name] = c
 			
 		return controllers
 
-	def parse_monitors(self, status_callback, correction_callback, markers_callback):
+	def parse_monitors(self, status_callback, revised_path_callback, markers_callback):
 		monitors = {}
 		for name, cfg in self.params.get("monitors", {}).items():
 			m = {}
-			m['mission_topic'] = cfg.get('mission')         # Path pub, mirror of the active strategic plan
-			m['correction_topic'] = cfg.get('correction')   # Path sub, proposed corrected course
-			m['status_topic'] = cfg.get('status')           # MonitorStatus sub
-			m['markers_topic'] = cfg.get('markers')         # MarkerArray sub, optional
-			m['last_correction'] = None
+			m['mission_topic'] = cfg.get('mission_in')                # Path pub, the mission as executed
+			m['current_path_topic'] = cfg.get('current_path_in')      # Path pub, relay of what the controller is following
+			m['revised_path_topic'] = cfg.get('revised_path_out')     # Path sub, proposed refinement
+			m['status_topic'] = cfg.get('status')                     # MonitorStatus sub
+			m['markers_topic'] = cfg.get('markers')                   # MarkerArray sub, optional
+			m['last_revised_path'] = None
 			m['revision_pending'] = False
 
 			if m['mission_topic']:
 				m['mission_pub'] = rospy.Publisher(m['mission_topic'], Path, queue_size=1, latch=True)
 				rospy.loginfo(f"Monitor[{name}] will receive missions -> {m['mission_topic']}")
 
-			if m['correction_topic']:
-				m['correction_sub'] = rospy.Subscriber(m['correction_topic'], Path, lambda msg, nm=name: correction_callback(nm, msg), queue_size=1)
-				rospy.loginfo(f"Monitor[{name}] corrections <- {m['correction_topic']}")
+			if m['current_path_topic']:
+				m['current_path_pub'] = rospy.Publisher(m['current_path_topic'], Path, queue_size=1, latch=True)
+				rospy.loginfo(f"Monitor[{name}] will receive the current path -> {m['current_path_topic']}")
+
+			if m['revised_path_topic']:
+				m['revised_path_sub'] = rospy.Subscriber(m['revised_path_topic'], Path, lambda msg, nm=name: revised_path_callback(nm, msg), queue_size=1)
+				rospy.loginfo(f"Monitor[{name}] revisions <- {m['revised_path_topic']}")
 
 			if m['status_topic']:
 				m['status_sub'] = rospy.Subscriber(m['status_topic'], MonitorStatus, lambda msg, nm=name: status_callback(nm, msg), queue_size=1)
