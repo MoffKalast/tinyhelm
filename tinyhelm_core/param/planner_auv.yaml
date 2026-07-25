@@ -1,6 +1,4 @@
 tinyhelm_waypoints:
-    publish_debug_markers: true
-
     # Any Z sent will be set to zero if true
     ignore_altitude: true
  
@@ -10,7 +8,7 @@ tinyhelm_waypoints:
     # If robot_frame is this far from the line, the projected distance will be min and scale to max when it's on the line.
     max_line_divergence: 4.0
  
-    # If any obstacles are defined then line divergence + robot width are used for finding a suitably wide path.
+    # The obstacle planner clears a corridor max_line_divergence wide, so half of this is kept as margin to hold the hull inside it.
     robot_width: 3.0
 
     # The carrot is projected at least/most this far ahead. Reduce min distance and increase max distance for smoother, but less accurate following.

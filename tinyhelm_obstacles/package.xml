@@ -1,7 +1,7 @@
 <package format="2">
     <name>tinyhelm_obstacles</name>
     <version>0.0.1</version>
-    <description>Decaying obstacle grid, theta* replanning and collision monitoring.</description>
+    <description>Decaying obstacle grid and theta* replanning.</description>
     <maintainer email="vid.rijavec@fri.uni-lj.si">MoffKalast</maintainer>
     <license>BSD</license>
 

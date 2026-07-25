@@ -33,7 +33,6 @@ target_link_libraries(scan_to_cloud ${catkin_LIBRARIES})
 
 install(PROGRAMS
   scripts/obstacle_planner_node.py
-  scripts/collision_monitor.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

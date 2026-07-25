@@ -57,15 +57,3 @@ tinyhelm_obstacles:
 
     monitor_rate: 10.0
     grid_publish_period: 1.0
-
-tinyhelm_collision_monitor:
-    vessel_halfwidth: 1.0
-    margin: 2.0
-
-    # Seconds of projected travel at the current command that make up the stop zone.
-    braking_horizon: 3.0
-
-    # Points inside the stop zone before an estop is raised, guards against single speckle returns.
-    min_points: 2
-
-    heartbeat_period: 1.0

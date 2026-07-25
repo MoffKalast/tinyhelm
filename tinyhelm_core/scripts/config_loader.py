@@ -61,7 +61,7 @@ class ConfigLoader:
 			
 		return controllers
 
-	def parse_monitors(self, status_callback, correction_callback):
+	def parse_monitors(self, status_callback, correction_callback, markers_callback):
 		monitors = {}
 		for name, cfg in self.params.get("monitors", {}).items():
 			m = {}
@@ -86,7 +86,9 @@ class ConfigLoader:
 			else:
 				rospy.logerr(f"Monitor[{name}] is missing a status topic!")
 
-			# markers_topic is stored for future relaying; no monitor publishes markers yet
+			if m['markers_topic']:
+				m['markers_sub'] = rospy.Subscriber(m['markers_topic'], MarkerArray, lambda msg, nm=name: markers_callback(nm, msg), queue_size=1)
+				rospy.loginfo(f"Monitor[{name}] markers <- {m['markers_topic']}")
 
 			monitors[name] = m
 

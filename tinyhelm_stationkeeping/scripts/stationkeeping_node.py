@@ -70,7 +70,6 @@ class StationKeepingNode:
 		self.status_pub.publish(msg)
 
 	def reconfigure_callback(self, config, level):
-		self.DEBUG_MARKERS = config.publish_debug_markers
 		self.MAX_LINEAR_SPD = config.max_linear_speed
 		self.MAX_ANGULAR_SPD = config.max_turning_speed
 		self.MAX_DIVEGENCE = config.max_divergence

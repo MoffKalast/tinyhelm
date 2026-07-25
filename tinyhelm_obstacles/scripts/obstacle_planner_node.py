@@ -11,6 +11,7 @@ from sensor_msgs import point_cloud2
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path, OccupancyGrid
 from std_msgs.msg import Empty
+from visualization_msgs.msg import MarkerArray
 from tinyhelm_core.msg import MonitorStatus
 
 import corridor_planner
@@ -96,6 +97,10 @@ class ObstaclePlannerNode:
 		self.remaining_pub = rospy.Publisher("/obstacle_planner/remaining", Path, queue_size=1, latch=True)
 		self.status_pub = rospy.Publisher("/tinyhelm/monitor/obstacles", MonitorStatus, queue_size=5, latch=True)
 		self.local_grid_pub = rospy.Publisher("/obstacle_planner/grid_local", OccupancyGrid, queue_size=1, latch=True)
+
+		# Placeholder so the helm's marker aggregation has something to subscribe to; nothing is
+		# published on it yet, the geofence and proposed detour are the obvious first candidates
+		self.markers_pub = rospy.Publisher("/obstacles/_markers", MarkerArray, queue_size=1)
 
 		rospy.loginfo("obstacle_planner: res %.2fm, chunks %.0fm, load radius %.0fm, frame %s", self.res, self.chunk_size, self.load_radius, self.planning_frame)
 

@@ -13,6 +13,5 @@
 	<node name="tinyhelm_scan_to_unreliable_cloud" pkg="tinyhelm_obstacles" type="scan_to_cloud" output="screen"/>
 
 	<node name="tinyhelm_obstacles" pkg="tinyhelm_obstacles" type="obstacle_planner_node.py" output="screen"/>
-	<node name="tinyhelm_collision_monitor" pkg="tinyhelm_obstacles" type="collision_monitor.py" output="screen"/>
 
 </launch>

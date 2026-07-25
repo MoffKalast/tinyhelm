@@ -18,7 +18,7 @@ from tf2_geometry_msgs import do_transform_pose
 from dynamic_reconfigure.server import Server as DynamicReconfigureServer
 
 from tinyhelm_core.msg import ControllerStatus
-from tinyhelm_waypoints.cfg import LinePlannerConfig
+from tinyhelm_waypoints.cfg import WaypointsConfig
 from nav_msgs.msg import Path
 
 ROBOT_FRAME = "base_link"
@@ -183,14 +183,17 @@ class LineFollowingController:
 		self.MAX_ANGULAR_SPD = rospy.get_param('~max_turning_speed', 2.0)
 
 		self.LINE_DIVERGENCE = rospy.get_param('~max_line_divergence', 1.0)
+		self.ROBOT_WIDTH = rospy.get_param('~robot_width', 0.0)
 		self.MIN_PROJECT_DIST = rospy.get_param('~min_project_dist', 0.15)
 		self.MAX_PROJECT_DIST = rospy.get_param('~max_project_dist', 1.2)
+
+		self.update_effective_divergence()
 
 		self.SIDE_OFFSET_MULT = rospy.get_param('~side_offset_mult', 0.8)
 
 		self.IGNORE_ALTITUDE = rospy.get_param('~ignore_altitude', True)
 
-		self.DEBUG_MARKERS = rospy.get_param('~publish_debug_markers', True)
+		self.RATE = rospy.Rate(rospy.get_param('~rate', 30))
 
 		self.markers = DebugMarkers(PLANNING_FRAME, "/waypoints/_markers")
 
@@ -218,13 +221,21 @@ class LineFollowingController:
 		self.goal_server = GoalServer(self.tf2_buffer, self.set_status, self.update_plan)
 		self.active = False
 
-		self.reconfigure_server = DynamicReconfigureServer(LinePlannerConfig, self.dynamic_reconfigure_callback)
+		self.reconfigure_server = DynamicReconfigureServer(WaypointsConfig, self.dynamic_reconfigure_callback)
 		self.active_pub.publish(False)
 
 		rospy.loginfo("Line planner started.")
 		rospy.loginfo("Robot frame: "+ROBOT_FRAME)
 		rospy.loginfo("Planning frame: "+PLANNING_FRAME)
 		self.set_status(ControllerStatus.IDLE, "Waypoint planner initialized.")
+
+	def update_effective_divergence(self):
+		# The obstacle planner only clears a corridor max_line_divergence wide, so the hull stays
+		# inside it only if we reach maximum correction half a robot width before the edge.
+		self.effective_divergence = max(0.0, self.LINE_DIVERGENCE - self.ROBOT_WIDTH / 2.0)
+
+		if self.effective_divergence == 0.0:
+			rospy.logwarn("robot_width %.2f leaves no room inside max_line_divergence %.2f, correction will always be maximal.", self.ROBOT_WIDTH, self.LINE_DIVERGENCE)
 
 	def set_status(self, status, string):
 		msg = ControllerStatus()
@@ -249,13 +260,17 @@ class LineFollowingController:
 		self.MAX_VERTICAL_SPD = config.max_vertical_speed
 
 		self.LINE_DIVERGENCE = config.max_line_divergence
+		self.ROBOT_WIDTH = config.robot_width
 		self.MIN_PROJECT_DIST = config.min_project_dist
 		self.MAX_PROJECT_DIST = config.max_project_dist
 
+		self.update_effective_divergence()
+
 		self.SIDE_OFFSET_MULT = config.side_offset_mult
 
-		self.DEBUG_MARKERS = config.publish_debug_markers
 		self.IGNORE_ALTITUDE = config.ignore_altitude
+
+		self.RATE = rospy.Rate(config.rate)
 
 		return config
 
@@ -333,7 +348,7 @@ class LineFollowingController:
 				pose,
 				self.MIN_PROJECT_DIST,
 				self.MAX_PROJECT_DIST,
-				self.LINE_DIVERGENCE,
+				self.effective_divergence,
 				self.SIDE_OFFSET_MULT
 			)
 			
@@ -357,8 +372,7 @@ class LineFollowingController:
 
 			self.send_twist(linear_velocity, angular_velocity, vertical_velocity)
 
-			if self.DEBUG_MARKERS:
-				self.markers.draw_debug_markers(target_position, start_goal, end_goal, self.MIN_GOAL_XY_DIST, self.LINE_DIVERGENCE)
+			self.markers.draw_debug_markers(target_position, start_goal, end_goal, self.MIN_GOAL_XY_DIST, self.LINE_DIVERGENCE)
 
 		except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
 			rospy.logwarn("TF Exception")
@@ -424,8 +438,7 @@ class LineFollowingController:
 	def reset(self):
 		self.send_twist(0, 0, 0)
 
-		if self.DEBUG_MARKERS:
-			self.markers.delete_debug_markers()
+		self.markers.delete_debug_markers()
 
 		self.active = False
 		self.active_pub.publish(False)
@@ -433,9 +446,8 @@ class LineFollowingController:
 		self.pid_vert.reset()
 
 ctrl = LineFollowingController()
-rate = rospy.Rate(rospy.get_param('~rate', 30))
 rospy.on_shutdown(ctrl.shutdown_cleanup)
 
 while not rospy.is_shutdown():
 	ctrl.update()
-	rate.sleep()
+	ctrl.RATE.sleep()

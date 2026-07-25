@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import math
 import rospy
+import threading
 import pprint
 import tf2_ros
 import tf
@@ -14,6 +16,7 @@ from std_msgs.msg import String, Bool, Empty
 from nav_msgs.msg import Path
 
 from geometry_msgs.msg import PoseStamped
+from tf2_geometry_msgs import do_transform_pose
 from visualization_msgs.msg import MarkerArray, Marker
 
 from behaviours import Behaviours, StateAction, Intention
@@ -55,6 +58,21 @@ class HelmCore:
 		self.markers_topic = self.params.get("markers_topic", "/tinyhelm/markers")
 		self.home_topic = self.params.get("home_topic", "/tinyhelm/set_home")
 
+		self.marker_rate = self.params.get("marker_rate", 10.0)
+		self.marker_clear_period = self.params.get("marker_clear_period", 5.0)
+		self.RATE = rospy.Rate(self.marker_rate)
+
+		# Markers from every source are aggregated into one array and relayed on a fixed tick,
+		# keyed by source so a fast publisher replaces its own set instead of stacking duplicates
+		self.marker_sources = {}
+		self.marker_lock = threading.Lock()
+		self.markers_published = False
+		self.last_marker_clear = rospy.Time(0)
+
+		self.hold_reach_params = self.params.get("hold_reach_params", [])
+		if not self.hold_reach_params:
+			rospy.logwarn("No hold_reach_params configured, automatic holds will always stay in place instead of pinning the last waypoint.")
+
 		#Multiplexer for cmd_vel
 		cmd_mux_cfg = self.params.get("cmd_vel_mux", {})
 		self.selector_topic = cmd_mux_cfg.get("selector_topic", "/cmd_vel_mux/_active_topic")
@@ -73,7 +91,7 @@ class HelmCore:
 
 		self.controllers = self.cfg_loader.parse_controllers(self.controller_status_callback, self.markers_callback)
 		self.behaviours = self.cfg_loader.parse_behaviours(self.behaviour_callback)
-		self.monitors = self.cfg_loader.parse_monitors(self.monitor_status_callback, self.monitor_correction_callback)
+		self.monitors = self.cfg_loader.parse_monitors(self.monitor_status_callback, self.monitor_correction_callback, self.monitor_markers_callback)
 
 		self.estop_sub = rospy.Subscriber(self.estop_topic, Empty, self.estop_callback, queue_size=1)
 		self.teleop_override_sub = rospy.Subscriber("/teleop_override_active", Bool, self.teleop_override, queue_size=1)
@@ -174,7 +192,9 @@ class HelmCore:
 		if self.active_controller and self.active_controller != controller_name:
 			self.stop_controller(self.active_controller)
 			rospy.sleep(0.1)
-			self.clear_markers()
+			# Only the outgoing controller's markers go; the aggregate redraws without them on the
+			# next tick, so monitor overlays survive the switch
+			self.drop_markers(f"controller:{self.active_controller}")
 
 		self.set_intention(intention)
 
@@ -210,6 +230,51 @@ class HelmCore:
 		self.active_controller = controller_name
 		self.set_cmd_vel_mux(controller_name)
 		self.publish_mission(intention.plan)
+
+	def hold_reach(self):
+		"""Summed bound on how far an automatic hold target may sit from the vessel. The params
+		are dynamically reconfigurable, so they are read per check rather than cached."""
+		reach = 0.0
+		for param in self.hold_reach_params:
+			value = rospy.get_param(param, None)
+			if value is None:
+				rospy.logwarn_throttle(30.0, f"Hold reach param {param} is unset, automatic holds will be stricter than intended.")
+				continue
+			reach += value
+
+		return reach
+
+	def pose_in_planning_frame(self, pose: PoseStamped, fallback_frame: str) -> PoseStamped:
+		frame = pose.header.frame_id or fallback_frame
+		if not frame or frame == self.PLANNING_FRAME:
+			return pose
+
+		transform = self.tf2_buffer.lookup_transform(self.PLANNING_FRAME, frame, rospy.Time(0))
+		return do_transform_pose(pose, transform)
+
+	def within_hold_reach(self, goal: PoseStamped, fallback_frame: str) -> bool:
+		"""A monitor correction can truncate the plan or substitute its last waypoint, so the
+		stored plan may end somewhere the vessel never went, possibly inside an obstacle. An
+		automatic hold trusts that target only while the vessel is near it. Compared in XY only,
+		since both bounds are horizontal and altitude may be ignored entirely."""
+		try:
+			robot = get_pose_in_frame(self.tf2_buffer, self.PLANNING_FRAME, self.ROBOT_FRAME)
+			target = self.pose_in_planning_frame(goal, fallback_frame)
+		except Exception as e:
+			rospy.logwarn(f"Cannot verify the hold target, holding in place instead: {e}")
+			return False
+
+		reach = self.hold_reach()
+		distance = math.hypot(
+			target.pose.position.x - robot.pose.position.x,
+			target.pose.position.y - robot.pose.position.y
+		)
+
+		if distance > reach:
+			rospy.logwarn(f"Plan finished {distance:.1f}m short of its last waypoint, past the {reach:.1f}m hold reach. The plan was likely truncated, holding in place instead.")
+			return False
+
+		return True
 
 	def publish_mission(self, plan):
 		"""Mirrors the active strategic plan to all monitors; an empty Path means nothing to watch."""
@@ -286,7 +351,7 @@ class HelmCore:
 			if intention.on_finish == StateAction.HOLD_POSITION:
 				rospy.loginfo("Finished plan, switching to stationkeeping.")
 
-				if isinstance(intention.plan, Path):
+				if isinstance(intention.plan, Path) and self.within_hold_reach(intention.plan.poses[-1], intention.plan.header.frame_id):
 					self.behaviour_callback('stationkeeping', intention.plan.poses[-1]) #stop at last waypoint exactly
 				else:
 					self.behaviour_callback('stationkeeping', None)# just stay where you are
@@ -308,9 +373,35 @@ class HelmCore:
 			rospy.logwarn(f"Controller {controller_name} is not feeling well: {msg.message}")
 			self.behaviour_callback('stationkeeping', None)
 
-	def markers_callback(self, controller_name, msg):
-		if controller_name == self.active_controller:
-			self.markers_pub.publish(msg)
+	def markers_callback(self, controller_name, msg: MarkerArray):
+		if controller_name != self.active_controller:
+			self.drop_markers(f"controller:{controller_name}")
+			return
+
+		self.store_markers(f"controller:{controller_name}", msg)
+
+	def monitor_markers_callback(self, monitor_name: str, msg: MarkerArray):
+		# Monitors are relayed whoever is driving: an obstacle overlay is most wanted precisely
+		# when a monitor has forced the helm into stationkeeping
+		self.store_markers(f"monitor:{monitor_name}", msg)
+
+	def store_markers(self, source: str, msg: MarkerArray):
+		"""A source clearing its own markers must never reach the aggregate, since one DELETEALL
+		in there wipes every other source's namespaces too. It drops the source's entry instead,
+		and the leading wipe in relay_markers takes care of the rest."""
+		delete_all = getattr(Marker, "DELETEALL", 3)
+		markers = [m for m in msg.markers if m.action != delete_all]
+
+		if not markers:
+			self.drop_markers(source)
+			return
+
+		with self.marker_lock:
+			self.marker_sources[source] = markers
+
+	def drop_markers(self, source: str):
+		with self.marker_lock:
+			self.marker_sources.pop(source, None)
 
 	def clear_markers(self):
 		m = Marker()
@@ -319,21 +410,55 @@ class HelmCore:
 		ma.markers.append(m)
 		self.markers_pub.publish(ma)
 
+	def relay_markers(self):
+		if not self.enabled:
+			# Nothing should be driving, so wipe the display, but slowly enough not to spam it
+			if (rospy.Time.now() - self.last_marker_clear).to_sec() >= self.marker_clear_period:
+				self.clear_markers()
+				self.last_marker_clear = rospy.Time.now()
+				self.markers_published = False
+				with self.marker_lock:
+					self.marker_sources.clear()
+			return
+
+		with self.marker_lock:
+			sources = list(self.marker_sources.values())
+
+		if not sources:
+			# One final wipe on the transition, then stay quiet
+			if self.markers_published:
+				self.clear_markers()
+				self.markers_published = False
+			return
+
+		# A leading wipe followed by a full redraw in the same array: a source that stopped
+		# publishing disappears without the helm tracking every namespace and id it ever relayed.
+		# Rviz applies the whole array in one pass, so this does not flicker.
+		arr = MarkerArray()
+		arr.markers.append(Marker())
+		arr.markers[0].action = getattr(Marker, "DELETEALL", 3)
+		for markers in sources:
+			arr.markers.extend(markers)
+
+		self.markers_pub.publish(arr)
+		self.markers_published = True
+
 	def update(self):
-		if self.active_controller is None:
-			self.clear_markers()
+		self.relay_markers()
 
 if __name__ == "__main__":
 	try:
 		node = HelmCore()
-		rate = rospy.Rate(1.0)
 		while not rospy.is_shutdown():
-			#try:
+			try:
+				node.RATE.sleep()
+			except rospy.ROSTimeMovedBackwardsException:
+				rospy.logwarn("Time moved backwards, resetting the marker relay clock.")
+				node.RATE = rospy.Rate(node.marker_rate)
+				continue
+			except rospy.ROSInterruptException:
+				break
 			node.update()
-			#except Exception as e:
-				#rospy.logwarn(str(e))
-				#return
-			rate.sleep()
 	except rospy.ROSInterruptException:
 		rospy.logwarn("Tinyhelm shutting down...")
 		pass
