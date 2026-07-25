@@ -15,7 +15,6 @@
 	<node name="tinyhelm_sim_obstacles_node" pkg="tinyhelm_sim" type="sim_obstacles.py" output="screen">
 		<param name="fixed_frame" value="$(arg fixed_frame)"/>
 		<param name="laser_frame" value="laser"/>
-		<param name="scan_topic" value="/scan_verified"/>
 		<param name="max_range" value="25.0"/>
 		<param name="num_beams" value="360"/>
 		<param name="rate" value="10"/>

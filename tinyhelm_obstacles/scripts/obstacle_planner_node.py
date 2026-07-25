@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import math
 import rospy
+import threading
 import tf2_ros
 import tf2_geometry_msgs
 import numpy as np
@@ -18,6 +19,8 @@ import corridor_planner
 from chunked_grid import ChunkedGrid
 from cost_field import CostField
 from corridor_planner import CorridorPlanner
+
+RELIABLE, UNRELIABLE, FREE = "reliable", "unreliable", "free"
 
 STATUS_LEVELS = {
 	corridor_planner.OK: MonitorStatus.OK,
@@ -75,6 +78,18 @@ class ObstaclePlannerNode:
 			lambda m: rospy.logwarn("obstacle_planner: %s" % m))
 
 		self.local_field = CostField()
+
+		# Subscriber callbacks only stash their input; everything that mutates the grid or the
+		# planner is applied on the tick thread in apply_pending. replan() walks the mission for as
+		# long as a search takes, and a mission cleared from a callback thread partway through that
+		# walk used to take the node down with an IndexError.
+		self.pending_lock = threading.Lock()
+		self.pending_mission = None
+		self.pending_current_path = None
+		self.pending_grid_clear = False
+		self.pending_hits = []
+		self.max_pending_hit_batches = rospy.get_param("~max_pending_hit_batches", 200)
+
 		self.blocked = False
 		self.have_last_pose = False
 		self.last_rx = 0.0
@@ -103,61 +118,83 @@ class ObstaclePlannerNode:
 
 		rospy.loginfo("obstacle_planner: res %.2fm, chunks %.0fm, load radius %.0fm, frame %s", self.res, self.chunk_size, self.load_radius, self.planning_frame)
 
-	def free_hits_callback(self, msg):
+	def cloud_to_points(self, msg):
+		"""Transform and unpack on the callback thread, since that part is bounded and per message,
+		but hand the points over rather than touching the grid the tick thread is reading."""
 		if msg.header.frame_id != self.planning_frame:
 			try:
 				tf = self.tf_buffer.lookup_transform(self.planning_frame, msg.header.frame_id, msg.header.stamp, rospy.Duration(0.1))
 				msg = do_transform_cloud(msg, tf)
 			except tf2_ros.TransformException as e:
 				rospy.logwarn_throttle(5.0, "obstacle_planner: cloud transform failed: %s" % e)
-				return
-			
-		now = rospy.Time.now().to_sec()
-		for x, y in point_cloud2.read_points(msg, field_names=("x", "y"), skip_nans=True):
-			self.grid.remove_hit(x, y, now)
+				return None
+
+		return list(point_cloud2.read_points(msg, field_names=("x", "y"), skip_nans=True))
+
+	def queue_hits(self, kind, msg):
+		points = self.cloud_to_points(msg)
+		if points is None:
+			return
+
+		# Timestamped now rather than at apply time, so a slow tick does not make old returns look
+		# fresher than they are to the decay
+		batch = (kind, points, rospy.Time.now().to_sec())
+
+		with self.pending_lock:
+			self.pending_hits.append(batch)
+			if len(self.pending_hits) > self.max_pending_hit_batches:
+				dropped = len(self.pending_hits) - self.max_pending_hit_batches
+				self.pending_hits = self.pending_hits[dropped:]
+				rospy.logwarn_throttle(5.0, "obstacle_planner: tick is falling behind, dropped %d cloud batches" % dropped)
+
+	def free_hits_callback(self, msg):
+		self.queue_hits(FREE, msg)
 
 	def reliable_hits_callback(self, msg):
-		if msg.header.frame_id != self.planning_frame:
-			try:
-				tf = self.tf_buffer.lookup_transform(self.planning_frame, msg.header.frame_id, msg.header.stamp, rospy.Duration(0.1))
-				msg = do_transform_cloud(msg, tf)
-			except tf2_ros.TransformException as e:
-				rospy.logwarn_throttle(5.0, "obstacle_planner: cloud transform failed: %s" % e)
-				return
-
-		now = rospy.Time.now().to_sec()
-		for x, y in point_cloud2.read_points(msg, field_names=("x", "y"), skip_nans=True):
-			self.grid.add_hit(x, y, now)
+		self.queue_hits(RELIABLE, msg)
 
 	def unreliable_hits_callback(self, msg):
-		if msg.header.frame_id != self.planning_frame:
-			try:
-				tf = self.tf_buffer.lookup_transform(self.planning_frame, msg.header.frame_id, msg.header.stamp, rospy.Duration(0.1))
-				msg = do_transform_cloud(msg, tf)
-			except tf2_ros.TransformException as e:
-				rospy.logwarn_throttle(5.0, "obstacle_planner: cloud transform failed: %s" % e)
-				return
-
-		now = rospy.Time.now().to_sec()
-		for x, y in point_cloud2.read_points(msg, field_names=("x", "y"), skip_nans=True):
-			self.grid.add_unreliable_hit(x, y, now)
-
-	def hits_callback(self, msg):
-		if msg.header.frame_id != self.planning_frame:
-			try:
-				tf = self.tf_buffer.lookup_transform(self.planning_frame, msg.header.frame_id, msg.header.stamp, rospy.Duration(0.1))
-				msg = do_transform_cloud(msg, tf)
-			except tf2_ros.TransformException as e:
-				rospy.logwarn_throttle(5.0, "obstacle_planner: cloud transform failed: %s" % e)
-				return
-
-		now = rospy.Time.now().to_sec()
-		for x, y in point_cloud2.read_points(msg, field_names=("x", "y"), skip_nans=True):
-			self.grid.add_hit(x, y, now)
+		self.queue_hits(UNRELIABLE, msg)
 
 	def grid_clear_callback(self, _):
-		self.grid.clear()
-		rospy.loginfo("obstacle_planner: grid cleared by request")
+		with self.pending_lock:
+			self.pending_grid_clear = True
+
+	def apply_pending(self):
+		"""Drains everything the callbacks stashed. Runs on the tick thread only, which is what
+		makes the grid and the planner single threaded despite the multithreaded subscribers."""
+		with self.pending_lock:
+			mission = self.pending_mission
+			current_path = self.pending_current_path
+			hits = self.pending_hits
+			clear = self.pending_grid_clear
+
+			self.pending_mission = None
+			self.pending_current_path = None
+			self.pending_hits = []
+			self.pending_grid_clear = False
+
+		if clear:
+			self.grid.clear()
+			rospy.loginfo("obstacle_planner: grid cleared by request")
+
+		for kind, points, stamp in hits:
+			if kind == RELIABLE:
+				for x, y in points:
+					self.grid.add_hit(x, y, stamp)
+			elif kind == UNRELIABLE:
+				for x, y in points:
+					self.grid.add_unreliable_hit(x, y, stamp)
+			else:
+				for x, y in points:
+					self.grid.remove_hit(x, y, stamp)
+
+		if mission is not None:
+			self.blocked = False
+			self.planner.set_mission(mission)
+
+		if current_path is not None:
+			self.planner.set_current_path(current_path)
 
 	def mission_callback(self, msg):
 		# Missions can arrive in any frame; everything downstream assumes the planning
@@ -172,11 +209,12 @@ class ObstaclePlannerNode:
 				rospy.logwarn("obstacle_planner: mission in frame '%s' could not be transformed, ignoring it: %s" % (frame, e))
 				poses = []
 
-		self.blocked = False
-		self.planner.set_mission([(p.pose.position.x, p.pose.position.y, p.pose.position.z) for p in poses])
+		with self.pending_lock:
+			self.pending_mission = [(p.pose.position.x, p.pose.position.y, p.pose.position.z) for p in poses]
 
 	def current_path_callback(self, msg):
-		self.planner.set_current_path([(p.pose.position.x, p.pose.position.y, p.pose.position.z) for p in msg.poses])
+		with self.pending_lock:
+			self.pending_current_path = [(p.pose.position.x, p.pose.position.y, p.pose.position.z) for p in msg.poses]
 
 	def get_robot_pose(self):
 		try:
@@ -186,6 +224,8 @@ class ObstaclePlannerNode:
 			return None
 
 	def tick(self):
+		self.apply_pending()
+
 		pose = self.get_robot_pose()
 		if pose is None:
 			return

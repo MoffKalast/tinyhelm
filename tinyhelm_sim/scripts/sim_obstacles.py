@@ -8,6 +8,7 @@ import math
 import rospy
 import numpy as np
 import tf2_ros
+import copy
 
 from std_msgs.msg import Empty, ColorRGBA
 from sensor_msgs.msg import LaserScan
@@ -22,7 +23,6 @@ class SimObstacles:
 
 		self.FIXED_FRAME = rospy.get_param("~fixed_frame", "local")
 		self.LASER_FRAME = rospy.get_param("~laser_frame", "laser")
-		self.SCAN_TOPIC = rospy.get_param("~scan_topic", "/scan_filtered")
 
 		self.N_BEAMS = rospy.get_param("~num_beams", 360)
 		self.MAX_RANGE = rospy.get_param("~max_range", 50.0)
@@ -43,11 +43,13 @@ class SimObstacles:
 
 		self.add_sub = rospy.Subscriber("/sim/add_obstacle_polygon", PolygonStamped, self.add_polygon)
 		self.clear_sub = rospy.Subscriber("/sim/clear_obstacle_polygons", Empty, self.clear_polygons)
-		self.scan_pub = rospy.Publisher(self.SCAN_TOPIC, LaserScan, queue_size=1)
+
+		self.scan_unreliable_pub = rospy.Publisher("/scan_filtered", LaserScan, queue_size=1)
+		self.scan_verified_pub = rospy.Publisher("/scan_verified", LaserScan, queue_size=1)
 		self.marker_pub = rospy.Publisher("/sim/obstacle_markers", MarkerArray, queue_size=1, latch=True)
 
 		self.publish_markers()
-		rospy.loginfo(f"sim_obstacles: {len(self.segments)} segments loaded, {self.N_BEAMS} beams @ {self.RATE}Hz on {self.SCAN_TOPIC}")
+		rospy.loginfo(f"sim_obstacles: {len(self.segments)} segments loaded, {self.N_BEAMS} beams @ {self.RATE}Hz")
 
 	def add_ring(self, ring):
 		if len(ring) < 3:
@@ -144,26 +146,54 @@ class SimObstacles:
 		scan.range_max = self.MAX_RANGE
 
 		beam_angles = scan.angle_min + np.arange(self.N_BEAMS) * scan.angle_increment
+
 		if have_pose:
-			ranges = self.raycast(ox, oy, beam_angles + yaw)
-			ranges += np.random.normal(0.0, self.NOISE_SIGMA, self.N_BEAMS)
-			ranges[np.random.random(self.N_BEAMS) < self.DROPOUT] = np.inf
+			true_ranges = self.raycast(ox, oy, beam_angles + yaw)
 		else:
-			ranges = np.full(self.N_BEAMS, np.inf)
+			true_ranges = np.full(self.N_BEAMS, np.inf)
+
+		# ------------------------------------------------------------------
+		# Unreliable scan (noise + dropout + speckle)
+		# ------------------------------------------------------------------
+		noisy_ranges = true_ranges.copy()
+
+		if have_pose:
+			noisy_ranges += np.random.normal(0.0, self.NOISE_SIGMA, self.N_BEAMS)
+			noisy_ranges[np.random.random(self.N_BEAMS) < self.DROPOUT] = np.inf
 
 		n_speckle = np.random.poisson(self.SPECKLE_RATE)
 		if n_speckle > 0:
 			idx = np.random.randint(0, self.N_BEAMS, n_speckle)
-			ranges[idx] = np.random.uniform(self.MIN_RANGE * 2, self.MAX_RANGE * 0.8, n_speckle)
+			noisy_ranges[idx] = np.random.uniform(self.MIN_RANGE * 2, self.MAX_RANGE * 0.8, n_speckle)
 
-		ranges[(ranges < self.MIN_RANGE) | (ranges > self.MAX_RANGE)] = np.inf
-		scan.ranges = ranges.tolist()
-		return scan
+		noisy_ranges[(noisy_ranges < self.MIN_RANGE) | (noisy_ranges > self.MAX_RANGE)] = np.inf
+
+		noisy_scan = copy.deepcopy(scan)
+		noisy_scan.ranges = noisy_ranges.tolist()
+
+		# ------------------------------------------------------------------
+		# Verified scan (clean, forward 100° FOV only)
+		# ------------------------------------------------------------------
+		verified_ranges = true_ranges.copy()
+
+		fov = math.radians(100.0)
+		half_fov = fov * 0.5
+		forward = math.pi / 2.0
+		verified_ranges[np.abs(beam_angles - forward) > half_fov] = np.inf
+
+		verified_ranges[(verified_ranges < self.MIN_RANGE) | (verified_ranges > self.MAX_RANGE)] = np.inf
+
+		verified_scan = copy.deepcopy(scan)
+		verified_scan.ranges = verified_ranges.tolist()
+
+		return noisy_scan, verified_scan
 
 	def run(self):
 		rate = rospy.Rate(self.RATE)
 		while not rospy.is_shutdown():
-			self.scan_pub.publish(self.make_scan())
+			noisy_scan, verified_scan = self.make_scan()
+			self.scan_unreliable_pub.publish(noisy_scan)
+			self.scan_verified_pub.publish(verified_scan)
 			rate.sleep()
 
 if __name__ == "__main__":
