@@ -34,15 +34,19 @@ tinyhelm_obstacles:
     soft_radius: 15.0
     soft_weight: 10.0
 
-    # Detours shorter than this are not worth replanning for.
-    min_detour: 25.0
-
-    # Cap on detour length, both absolute and as a fraction of the leg being replanned.
-    detour_leg_fraction: 0.5
-    max_detour: 200.0
+    # How far off its line the vessel may ever be routed. This is a flat limit on purpose: it also
+    # bounds the region the search has to cover, so scaling it with leg length made long transits
+    # ruinously slow to replan. Doubles as the padding on the search box.
+    max_lateral_detour: 20.0
 
     # Search is abandoned once the expanded cost exceeds budget_factor times the straight line cost.
     budget_factor: 3.0
+
+    # Ceiling on cell expansions per search, and the main bound on how long one replan can block.
+    # An exhaustive failure costs roughly linearly in this: ~0.6s at 5000, ~5s at 20000, ~60s at
+    # 100000. Raise it only as far as the tick can afford, since a truncated search reports a leg
+    # unplannable whether or not it is. The geofence markers show the space it has to cover.
+    expansion_limit: 5000
 
     # Consecutive failed replans before the goal is reported unreachable.
     unreachable_cycles: 3

@@ -25,7 +25,7 @@ from config_loader import ConfigLoader
 
 from tinyhelm_core.msg import ControllerStatus, MonitorStatus
 
-from util import get_pose_in_frame, strip_repeated_poses
+from util import get_pose_in_frame, strip_repeated_poses, drop_passed_legs
 
 STATUS_NAMES = {
     ControllerStatus.IDLE: "IDLE",
@@ -367,6 +367,31 @@ class HelmCore:
 			rospy.logwarn(f"Monitor {monitor_name} demands a stop! Transitioning to stationkeeping.")
 			self.behaviour_callback('stationkeeping', None)
 
+	def trim_revision(self, revision: Path) -> Path:
+		"""Last chance to drop legs the vessel has outrun. A search takes as long as it takes and the
+		result then waits on a monitor status before being relayed, by which point its opening leg
+		can be well astern, and the controller has no way to tell a stale opening pose from a
+		waypoint it is meant to visit."""
+		if revision.header.frame_id and revision.header.frame_id != self.PLANNING_FRAME:
+			rospy.logwarn_throttle(5.0, f"Revision arrived in {revision.header.frame_id}, not {self.PLANNING_FRAME}, relaying it whole.")
+			return revision
+
+		try:
+			vessel = get_pose_in_frame(self.tf2_buffer, self.PLANNING_FRAME, self.ROBOT_FRAME)
+		except Exception as e:
+			rospy.logwarn_throttle(5.0, f"Cannot trim a revision without a transform, relaying it whole: {e}")
+			return revision
+
+		trimmed = drop_passed_legs(revision.poses, vessel.pose.position.x, vessel.pose.position.y)
+		if len(trimmed) == len(revision.poses):
+			return revision
+
+		rospy.loginfo(f"Revision opened {len(revision.poses) - len(trimmed)} leg(s) astern of us, trimmed.")
+		out = Path()
+		out.header = revision.header
+		out.poses = trimmed
+		return out
+
 	def revise_plan(self, monitor_name: str):
 		revision = self.monitors[monitor_name].get('last_revised_path')
 		if revision is None or len(revision.poses) < 2:
@@ -381,7 +406,7 @@ class HelmCore:
 
 		# The controller works out where to rejoin a path by itself, so a revision needs no topic of
 		# its own; it is just another path that happens to start next to us
-		path_pub.publish(revision)
+		path_pub.publish(self.trim_revision(revision))
 		# consume it so a repeated REPLAN status doesn't re-send an identical revision
 		self.monitors[monitor_name]['last_revised_path'] = None
 		self.monitors[monitor_name]['revision_pending'] = False

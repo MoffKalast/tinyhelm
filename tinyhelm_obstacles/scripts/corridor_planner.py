@@ -15,7 +15,9 @@ class CorridorPlanner:
 		self.log_info = log_info
 		self.log_warn = log_warn
 
-		self.theta_star = ThetaStar()
+		self.theta_star = ThetaStar(expansion_limit=config["expansion_limit"])
+		self.peak_expansions = 0
+		self.truncated_searches = 0
 		self.effective_inflate = config["inflate_radius"]
 
 		self.mission = []
@@ -61,13 +63,15 @@ class CorridorPlanner:
 		self.remaining = self.mission[self.next_wp_index:]
 
 	def build_geofence(self, rx, ry):
+		"""A tube of fixed radius around every remaining leg."""
+		radius = self.cfg["max_lateral_detour"]
 		fence = []
 		px, py = rx, ry
+
 		for wx, wy, _ in self.remaining:
-			leg = math.hypot(wx - px, wy - py)
-			radius = min(self.cfg["max_detour"], max(self.cfg["min_detour"], leg * self.cfg["detour_leg_fraction"]))
 			fence.append(Capsule(px, py, wx, wy, radius))
 			px, py = wx, wy
+
 		return fence
 
 	def corridor_point_blocked(self, field, x, y):
@@ -173,7 +177,15 @@ class CorridorPlanner:
 		return None
 
 	def plan_leg(self, field, sx, sy, gx, gy):
-		leg = self.theta_star.plan(field, sx, sy, gx, gy, self.cfg["max_detour"])
+		# The fence already forbids straying further than this, so padding the search box by the same
+		# amount covers everything reachable and nothing that isn't
+		leg = self.theta_star.plan(field, sx, sy, gx, gy, self.cfg["max_lateral_detour"])
+		self.peak_expansions = max(self.peak_expansions, self.theta_star.last_expansions)
+
+		if self.theta_star.hit_limit:
+			self.truncated_searches += 1
+			self.log_warn("search gave up at the %d expansion limit, so this leg is reported unplannable whether or not it is" % self.theta_star.expansion_limit)
+
 		return smooth_leg(field, leg, self.cfg["resolution"] * 2.0) if leg else []
 
 	def plan_corridor_leg(self, field, ax, ay, bx, by):

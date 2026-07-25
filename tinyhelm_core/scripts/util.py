@@ -32,6 +32,28 @@ def strip_repeated_poses(poses: List[PoseStamped], epsilon: float = 1e-3) -> Lis
 
     return out
 
+def drop_passed_legs(poses: List[PoseStamped], x: float, y: float) -> List[PoseStamped]:
+    """Trims legs the vessel has already run past. Planning is not instant, so a path names a
+    position the vessel held when the search started, and relaying it whole is what sends the vessel
+    back to where it used to be. A leg counts as passed once the vessel's projection onto it reaches
+    the far end. The anchor kept is the leg's own start rather than the vessel's position, so the
+    controller still has a line to track instead of a point to chase."""
+    if len(poses) < 2:
+        return poses
+
+    for i in range(len(poses) - 1):
+        a, b = poses[i].pose.position, poses[i + 1].pose.position
+        dx, dy = b.x - a.x, b.y - a.y
+        length_sq = dx * dx + dy * dy
+        if length_sq < 1e-9:
+            continue
+
+        if ((x - a.x) * dx + (y - a.y) * dy) / length_sq < 1.0:
+            return poses[i:]
+
+    # Past the end of every leg, so the last one is all that is left to track
+    return poses[-2:]
+
 def closest_pose_index(robot_pose: PoseStamped, poses: List[PoseStamped]) -> int:
     """Find index of pose in `poses` closest to robot_pose."""
     rx, ry = robot_pose.pose.position.x, robot_pose.pose.position.y

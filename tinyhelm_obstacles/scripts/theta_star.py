@@ -46,9 +46,13 @@ class ThetaStar:
 
 	# The heuristic is inflated a hair to break the equal-cost plateaus of free space,
 	# which would otherwise make python-side A* crawl on long unobstructed legs
-	def __init__(self, expansion_limit=100000, heuristic_weight=1.001):
+	def __init__(self, expansion_limit=5000, heuristic_weight=1.001):
 		self.expansion_limit = expansion_limit
 		self.heuristic_weight = heuristic_weight
+
+		# Reported so the limit is observable rather than silently truncating searches
+		self.last_expansions = 0
+		self.hit_limit = False
 
 	def plan(self, field, sx, sy, gx, gy, margin):
 		"""Returns a list of (x, y) tuples, empty on failure. The start is nudged out of
@@ -89,6 +93,9 @@ class ThetaStar:
 		def heuristic(cell):
 			return math.hypot(goal[0] - cell[0], goal[1] - cell[1]) * res * self.heuristic_weight
 
+		self.last_expansions = 0
+		self.hit_limit = False
+
 		g = {start: 0.0}
 		parent = {start: start}
 		closed = set()
@@ -105,7 +112,9 @@ class ThetaStar:
 				break
 
 			expansions += 1
+			self.last_expansions = expansions
 			if expansions > self.expansion_limit:
+				self.hit_limit = True
 				return []
 
 			for ox, oy in NEIGHBOURS:

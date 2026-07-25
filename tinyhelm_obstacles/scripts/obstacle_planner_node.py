@@ -9,10 +9,10 @@ import numpy as np
 from tf2_sensor_msgs.tf2_sensor_msgs import do_transform_cloud
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs import point_cloud2
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Point
 from nav_msgs.msg import Path, OccupancyGrid
 from std_msgs.msg import Empty
-from visualization_msgs.msg import MarkerArray
+from visualization_msgs.msg import Marker, MarkerArray
 from tinyhelm_core.msg import MonitorStatus
 
 import corridor_planner
@@ -64,11 +64,10 @@ class ObstaclePlannerNode:
 		config = {
 			"resolution": self.res,
 			"inflate_radius": self.inflate_radius,
-			"min_detour": rospy.get_param("~min_detour", 25.0),
-			"detour_leg_fraction": rospy.get_param("~detour_leg_fraction", 0.5),
-			"max_detour": rospy.get_param("~max_detour", 200.0),
+			"max_lateral_detour": rospy.get_param("~max_lateral_detour", 20.0),
 			"budget_factor": rospy.get_param("~budget_factor", 3.0),
 			"unreachable_cycles": rospy.get_param("~unreachable_cycles", 3),
+			"expansion_limit": rospy.get_param("~expansion_limit", 5000),
 			"waypoint_reached_radius": rospy.get_param("~waypoint_reached_radius", 6.0),
 		}
 
@@ -90,6 +89,7 @@ class ObstaclePlannerNode:
 		self.pending_hits = []
 		self.max_pending_hit_batches = rospy.get_param("~max_pending_hit_batches", 200)
 
+		self.fence = None
 		self.blocked = False
 		self.have_last_pose = False
 		self.last_rx = 0.0
@@ -112,8 +112,6 @@ class ObstaclePlannerNode:
 		self.remaining_pub = rospy.Publisher("/obstacles/_remaining", Path, queue_size=1, latch=True)
 		self.local_grid_pub = rospy.Publisher("/obstacles/_grid", OccupancyGrid, queue_size=1, latch=True)
 
-		# Placeholder so the helm's marker aggregation has something to subscribe to; nothing is
-		# published on it yet, the geofence and proposed detour are the obvious first candidates
 		self.markers_pub = rospy.Publisher("/obstacles/_markers", MarkerArray, queue_size=1)
 
 		rospy.loginfo("obstacle_planner: res %.2fm, chunks %.0fm, load radius %.0fm, frame %s", self.res, self.chunk_size, self.load_radius, self.planning_frame)
@@ -212,6 +210,17 @@ class ObstaclePlannerNode:
 		with self.pending_lock:
 			self.pending_mission = [(p.pose.position.x, p.pose.position.y, p.pose.position.z) for p in poses]
 
+		#TODO apply mission before setting this otherwise it's garbage data
+		#set up geofence radius
+		rx, ry = self.get_robot_pose()
+		self.fence = self.planner.build_geofence(rx, ry)
+		self.publish_fence_markers()
+
+		#update corridor width in case it was reconfigured
+		corridor = rospy.get_param(self.divergence_param, 0.0)
+		self.planner.effective_inflate = self.inflate_radius + corridor
+
+
 	def current_path_callback(self, msg):
 		with self.pending_lock:
 			self.pending_current_path = [(p.pose.position.x, p.pose.position.y, p.pose.position.z) for p in msg.poses]
@@ -221,20 +230,19 @@ class ObstaclePlannerNode:
 			tf = self.tf_buffer.lookup_transform(self.planning_frame, self.robot_frame, rospy.Time(0))
 			return tf.transform.translation.x, tf.transform.translation.y
 		except tf2_ros.TransformException:
-			return None
+			rospy.sleep(1.0)
+			return self.get_robot_pose()
 
 	def tick(self):
 		self.apply_pending()
-
-		pose = self.get_robot_pose()
-		if pose is None:
-			return
-		rx, ry = pose
+		
+		rx, ry = self.get_robot_pose()
 		now = rospy.Time.now()
 
 		if self.have_last_pose and math.hypot(rx - self.last_rx, ry - self.last_ry) > self.pose_jump_threshold:
 			rospy.logwarn("obstacle_planner: pose jumped %.1fm, assuming ENU reset and clearing grid", math.hypot(rx - self.last_rx, ry - self.last_ry))
 			self.grid.clear()
+
 		self.last_rx = rx
 		self.last_ry = ry
 		self.have_last_pose = True
@@ -247,16 +255,13 @@ class ObstaclePlannerNode:
 
 		if not self.planner.mission:
 			return
+		
 		self.planner.update_remaining(rx, ry)
 		if not self.planner.remaining:
 			return
+		
 		self.publish_remaining(now)
-
-		corridor = rospy.get_param(self.divergence_param, 0.0)
-		self.planner.effective_inflate = self.inflate_radius + corridor
-
-		fence = self.planner.build_geofence(rx, ry)
-		self.build_local_field(rx, ry, fence)
+		self.build_local_field(rx, ry)
 
 		# Nothing to monitor until the helm relays a current path; the mission is handed to the
 		# controller directly, so there is no bootstrap replan
@@ -283,12 +288,57 @@ class ObstaclePlannerNode:
 		if points:
 			self.publish_path(points, now)
 
-	def build_local_field(self, rx, ry, fence):
+
+	def publish_fence_markers(self):
+
+		def fence_marker(capsule, marker_id, stamp):
+			"""Outline of one geofence capsule as a stadium: the search cannot leave this, so its radius
+			is what actually decides how much space a replan has to chew through."""
+			marker = Marker()
+			marker.header.frame_id = self.planning_frame
+			marker.header.stamp = stamp
+			marker.ns = "geofence"
+			marker.id = marker_id
+			marker.type = Marker.LINE_STRIP
+			marker.action = Marker.ADD
+			marker.scale.x = 0.3
+			marker.pose.orientation.w = 1.0
+			marker.lifetime = rospy.Duration(0)
+			marker.color.r, marker.color.g, marker.color.b, marker.color.a = 0.2, 0.6, 1.0, 0.7
+
+			dx, dy = capsule.x2 - capsule.x1, capsule.y2 - capsule.y1
+			length = math.hypot(dx, dy)
+			ux, uy = (dx / length, dy / length) if length > 1e-6 else (1.0, 0.0)
+			nx, ny = -uy, ux
+			r = capsule.radius
+			arc = 20
+
+			# Half turn around the far end, then half turn around the near end, closing the loop. The
+			# straight flanks fall out of joining the two arcs.
+			points = []
+			for end_x, end_y, base in ((capsule.x2, capsule.y2, 0.0), (capsule.x1, capsule.y1, math.pi)):
+				for i in range(arc + 1):
+					theta = base + math.pi * i / arc
+					c, sn = math.cos(theta), math.sin(theta)
+					points.append(Point(end_x + r * (c * nx + sn * ux), end_y + r * (c * ny + sn * uy), 0.0))
+
+			points.append(points[0])
+			marker.points = points
+			return marker
+
+		now = rospy.Time.now()
+		arr = MarkerArray()
+		for i, capsule in enumerate(self.fence):
+			arr.markers.append(fence_marker(capsule, i, now))
+
+		self.markers_pub.publish(arr)
+
+	def build_local_field(self, rx, ry):
 		size = int(math.ceil(2.0 * self.load_radius / self.res))
 		ox = math.floor((rx - self.load_radius) / self.res) * self.res
 		oy = math.floor((ry - self.load_radius) / self.res) * self.res
 		occupied = self.grid.window(ox, oy, size) >= self.occ_thresh
-		self.local_field.build(self.res, ox, oy, occupied, self.planner.effective_inflate, self.soft_radius, self.soft_weight, fence)
+		self.local_field.build(self.res, ox, oy, occupied, self.planner.effective_inflate, self.soft_radius, self.soft_weight, self.fence)
 
 	def make_pose(self, x, y, z):
 		p = PoseStamped()
