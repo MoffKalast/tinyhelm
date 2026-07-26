@@ -24,13 +24,10 @@ RESULT_CODES = {
 
 class PlannerNode:
 	"""Answers one question: how do I get from here to there without hitting anything and without
-	leaving the corridor. It holds no mission, no progress and no policy, so there is nothing here to
-	go stale and nothing to reset.
+	leaving the corridor. 
 
 	A search takes long enough that several costmap updates will land during one. Rather than lock the
-	map for the duration, each request takes a snapshot of the latest field and plans against that,
-	which is both the cheapest and the most honest answer to "always use the newest data": a reply is
-	explicitly an answer about the map as it stood when the request arrived.
+	map for the duration, each request takes a snapshot of the latest field and plans against that.
 
 	It also re-examines the route the monitor asked it to watch on every costmap update. That check
 	needs the distance field and nothing else, so doing it here keeps the monitor free of the grid

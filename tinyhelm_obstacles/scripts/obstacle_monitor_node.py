@@ -383,7 +383,7 @@ class ObstacleMonitorNode:
 		marker.id = marker_id
 		marker.type = Marker.LINE_STRIP
 		marker.action = Marker.ADD
-		marker.scale.x = 0.3
+		marker.scale.x = 0.2
 		marker.pose.orientation.w = 1.0
 		marker.color.r, marker.color.g, marker.color.b, marker.color.a = 0.2, 0.6, 1.0, 0.7
 

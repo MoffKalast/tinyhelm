@@ -1,9 +1,7 @@
-# Reported whenever the watched route changes between clear and obstructed, and periodically while
-# obstructed, so the monitor learns about an intrusion without ever touching the grid itself.
+# Reported whenever the watched route changes between clear and obstructed, and periodically while obstructed, so the monitor learns about an intrusion without ever touching the grid itself.
 bool blocked
 
-# Leg of the watched route the obstruction sits on, and how far along the route it is, so the monitor
-# can tell an obstruction under the bow from one several waypoints away. -1 and 0 when clear.
+# Leg of the watched route the obstruction sits on, and how far along the route it is, so the monitor can tell an obstruction under the bow from one several waypoints away. -1 and 0 when clear.
 int32 blocked_leg
 float64 blocked_distance
 

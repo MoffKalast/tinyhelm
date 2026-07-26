@@ -44,8 +44,7 @@ def cumulative_cost(field, points, step):
 def smooth_path(field, points, step):
 	"""String pulling that respects the cost field. A shortcut is taken only when it is no more
 	expensive than the stretch it replaces, so the standoff the search paid for survives instead of
-	being pulled back onto the inflation boundary. Testing lethality alone, as this used to, undid
-	the whole soft cost."""
+	being pulled back onto the inflation boundary."""
 	if len(points) <= 2:
 		return list(points)
 
@@ -70,11 +69,7 @@ class SearchGrid:
 	"""Virtual grid over the bounding box of start and goal plus a margin, at the cost field's
 	resolution. Nothing is allocated until a cell is touched. World lookups go through the field,
 	which reports free outside its extent, so unseen space stays optimistically clear and the
-	search is not clipped at the loaded window.
-
-	This exists as an object rather than a stack of closures inside plan() so the quantisation, the
-	memo and the cost model are all reachable from outside, which is what the C++ port wants and
-	what makes an injected heuristic possible at all."""
+	search is not clipped at the loaded window."""
 
 	def __init__(self, field, sx, sy, gx, gy, margin):
 		self.field = field

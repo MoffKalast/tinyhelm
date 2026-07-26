@@ -12,10 +12,10 @@ import tf
 
 from typing import Dict, Any, Optional
 
-from std_msgs.msg import String, Bool, Empty
+from std_msgs.msg import String, Bool, Empty, ColorRGBA
 from nav_msgs.msg import Path
 
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Point
 from tf2_geometry_msgs import do_transform_pose
 from visualization_msgs.msg import MarkerArray, Marker
 
@@ -36,6 +36,8 @@ STATUS_NAMES = {
     ControllerStatus.ABORTED: "ABORTED",
     ControllerStatus.ERROR: "ERROR",
 }
+
+HOME_RADIUS = 2
 
 class HelmCore:
 	def __init__(self):
@@ -92,6 +94,7 @@ class HelmCore:
 		self.current_behavior: Optional[Dict[str, Any]] = None
 
 		self.manual_home = None
+		self.home_pose = None
 
 		self.controllers = self.cfg_loader.parse_controllers(self.controller_status_callback, self.markers_callback, self.current_path_callback)
 		self.behaviours = self.cfg_loader.parse_behaviours(self.behaviour_callback)
@@ -131,6 +134,7 @@ class HelmCore:
 		
 	def home_callback(self, msg: PoseStamped):
 		self.manual_home = msg
+		self.store_markers("source:home", self.home_marker_array(self.manual_home))
 
 	def enabled_callback(self, msg: Bool):
 		if msg.data != self.enabled:
@@ -139,6 +143,7 @@ class HelmCore:
 
 			if self.enabled:
 				rospy.loginfo(f"Tinyhelm enabled!")
+				self.set_home()
 				self.behaviour_callback('stationkeeping', None)
 			else:
 				rospy.loginfo(f"Tinyhelm disabled!")
@@ -146,6 +151,64 @@ class HelmCore:
 				self.stop_controller(self.active_controller)
 				self.active_controller = None
 				self.publish_mission(Path())
+
+	def set_home(self):
+		if self.manual_home != None:
+			#we keep the manual override instead
+			return
+
+		"""Looks up base_link at the moment of activation and drops a marker there. This is separate
+		from manual_home, which comes from an operator on the home_topic instead."""
+		try:
+			home = get_pose_in_frame(self.tf2_buffer, self.PLANNING_FRAME, self.ROBOT_FRAME)
+		except Exception as e:
+			rospy.logwarn(f"Could not look up {self.ROBOT_FRAME} to set home: {e}")
+			return
+
+		self.home_pose = home
+		self.store_markers("source:home", self.home_marker_array(home))
+
+	def home_marker_array(self, pose: PoseStamped) -> MarkerArray:
+		arr = MarkerArray()
+
+		circle = Marker()
+		circle.header.frame_id = pose.header.frame_id
+		circle.header.stamp = rospy.Time.now()
+		circle.ns = "home"
+		circle.id = 0
+		circle.type = Marker.LINE_STRIP
+		circle.action = Marker.ADD
+		circle.pose.orientation.w = 1.0
+		circle.scale.x = 0.1
+		circle.color = ColorRGBA(r=0.0, g=0.8, b=0.0, a=0.7)
+
+		segments = 32
+		for i in range(segments + 1):
+			angle = 2.0 * math.pi * i / segments
+			circle.points.append(Point(
+				x=pose.pose.position.x + HOME_RADIUS * math.cos(angle),
+				y=pose.pose.position.y + HOME_RADIUS * math.sin(angle),
+				z=pose.pose.position.z
+			))
+
+		arr.markers.append(circle)
+
+		dot = Marker()
+		dot.header.frame_id = pose.header.frame_id
+		dot.header.stamp = rospy.Time.now()
+		dot.ns = "home"
+		dot.id = 1
+		dot.type = Marker.SPHERE
+		dot.action = Marker.ADD
+		dot.pose.orientation.w = 1.0
+		dot.scale.x = HOME_RADIUS * 0.5
+		dot.scale.y = HOME_RADIUS * 0.5
+		dot.scale.z = HOME_RADIUS * 0.5
+		dot.color = ColorRGBA(r=0.0, g=0.8, b=0.0, a=0.7)
+		dot.pose = pose.pose
+		arr.markers.append(dot)
+
+		return arr
 
 	def stop_controller(self, controller: str):
 			if controller == self.active_controller:

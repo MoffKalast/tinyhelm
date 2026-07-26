@@ -9,8 +9,7 @@ uint8 INTERNAL_ERROR=6
 uint32 request_id
 uint8 result
 
-# Set when the vessel's own cell was inside the inflation and the search had to begin nearby, in
-# which case path[0] is that nearby point and not the vessel
+# Set when the vessel's own cell was inside the inflation and the search had to begin nearby, in which case path[0] is that nearby point and not the vessel
 bool start_nudged
 
 float64 plan_seconds
