@@ -11,6 +11,20 @@ LETHAL = float("inf")
 # a larger weight buys detours that budget_factor then throws away as unplannable.
 SOFT_WEIGHT = 2.0
 
+# How much a path pays for straying from the leg it is meant to be running, at the divergence fence,
+# again as a multiple of the distance travelled. An order of magnitude below SOFT_WEIGHT so that an
+# obstacle always outranks the line: the worst passable water costs three times its length to cross
+# and the fence edge only one and a fifth, so this steers where there is a free choice and gives way
+# entirely where there is not.
+DIVERGENCE_WEIGHT = 2.0
+
+def segment_distance(px, py, ax, ay, bx, by):
+	dx = bx - ax
+	dy = by - ay
+	len2 = dx * dx + dy * dy
+	t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / len2)) if len2 > 0.0 else 0.0
+	return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
 class Capsule:
 	"""Line segment with a radius, used as one link of the corridor tube around the strategic legs.
 	distance() works on scalars and numpy arrays alike."""
@@ -77,8 +91,11 @@ class CostField:
 		self.dist = None
 		self.corridor_ok = None
 		self.corridor = None
+		self.centreline = None
+		self.divergence_radius = 0.0
+		self.divergence = None
 
-	def build(self, resolution, origin_x, origin_y, occupied, inflate_radius, soft_radius, corridor):
+	def build(self, resolution, origin_x, origin_y, occupied, inflate_radius, soft_radius, corridor, centreline=None, divergence_radius=0.0):
 		"""occupied is a [row, col] = [y, x] boolean array; the field is square."""
 		self.res = resolution
 		self.origin_x = origin_x
@@ -100,8 +117,9 @@ class CostField:
 			self.dist = np.full((self.size, self.size), self.soft, dtype=float)
 
 		self.rasterise_corridor(corridor)
+		self.adopt_centreline(centreline, divergence_radius)
 
-	def adopt(self, resolution, origin_x, origin_y, dist, inflate_radius, soft_radius, corridor):
+	def adopt(self, resolution, origin_x, origin_y, dist, inflate_radius, soft_radius, corridor, centreline=None, divergence_radius=0.0):
 		"""Takes a distance field computed elsewhere, which is how the planner consumes what the
 		costmap publishes. Inflation and the soft falloff are applied here rather than baked into the
 		grid, so the clearance can follow the controller's reconfigurable corridor width without the
@@ -115,6 +133,28 @@ class CostField:
 		self.dist = np.minimum(dist, self.soft)
 
 		self.rasterise_corridor(corridor)
+		self.adopt_centreline(centreline, divergence_radius)
+
+	def adopt_centreline(self, centreline, divergence_radius):
+		"""The line a path is meant to be running, kept as points rather than rasterised up front.
+		Nothing here knows the mission: the planner is stateless and is handed one leg per request, so
+		there is nothing long lived enough for precomputing to pay for. Cells are filled in as the
+		search touches them.
+
+		The cache cannot go stale. A field is built fresh from a locked snapshot for every request and
+		is discarded with it, so it never outlives the polyline and the distances it was filled from,
+		and there is no invalidation to get wrong.
+
+		Deliberately the polyline alone rather than the capsules the corridor is built from. That union
+		carries a disc at the vessel, and measuring deviation against the disc would read as zero
+		exactly where the pull back onto the line is most needed."""
+		self.centreline = list(centreline) if centreline and len(centreline) >= 2 else None
+		self.divergence_radius = divergence_radius
+
+		if self.centreline and divergence_radius > 0.0:
+			self.divergence = np.full((self.size, self.size), -1.0, dtype=np.float32)
+		else:
+			self.divergence = None
 
 	def rasterise_corridor(self, corridor):
 		# Kept alongside the raster so the corridor can still be answered for outside the window
@@ -164,11 +204,43 @@ class CostField:
 		shortfall = (self.soft - distance) / (self.soft - self.inflate)
 		return SOFT_WEIGHT * shortfall * shortfall
 
+	def deviation_at(self, x, y):
+		return min(segment_distance(x, y, self.centreline[i - 1][0], self.centreline[i - 1][1], self.centreline[i][0], self.centreline[i][1]) for i in range(1, len(self.centreline)))
+
+	def divergence_cost(self, x, y):
+		"""Dimensionless penalty per metre travelled: nothing on the line, DIVERGENCE_WEIGHT at the
+		fence. Linear rather than squared, unlike the obstacle falloff, because a squared term goes
+		flat near the line: a path drifts most of the way back and then stops caring and wanders. A
+		constant gradient is what actually rejoins the course, and its steepness is what decides
+		whether the return is a lazy sweep or a hard cut back."""
+		if self.divergence is None:
+			return 0.0
+
+		return DIVERGENCE_WEIGHT * min(1.0, self.deviation_at(x, y) / self.divergence_radius)
+
+	def divergence_cell(self, cx, cy):
+		if self.divergence is None:
+			return 0.0
+
+		penalty = self.divergence[cy, cx]
+		if penalty < 0.0:
+			penalty = self.divergence_cost(*self.cell_to_world(cx, cy))
+			self.divergence[cy, cx] = penalty
+
+		return penalty
+
 	def cost_cell(self, cx, cy):
 		if not self.corridor_ok[cy, cx]:
 			return LETHAL
 
-		return self.soft_cost(self.dist[cy, cx])
+		# Added only once the cell is known to be passable. Lethality travels as a sentinel compared
+		# with equality all through the search, so adding anything to it would leave a value that is
+		# still infinite but no longer tests as lethal.
+		soft = self.soft_cost(self.dist[cy, cx])
+		if soft == LETHAL:
+			return LETHAL
+
+		return soft + self.divergence_cell(cx, cy)
 
 	def in_corridor(self, x, y):
 		if not self.corridor:
@@ -184,7 +256,10 @@ class CostField:
 		# Unseen space beyond the window counts as clear of obstacles, but the corridor still applies
 		# out there. It is anchored to the mission rather than to the map, and a search allowed to slip
 		# round the edge of the window would be left with no bound on it at all.
-		return 0.0 if self.in_corridor(x, y) else LETHAL
+		if not self.in_corridor(x, y):
+			return LETHAL
+
+		return self.divergence_cost(x, y)
 
 	def lethal_at(self, x, y):
 		"""Anything the search may not enter, for either reason."""

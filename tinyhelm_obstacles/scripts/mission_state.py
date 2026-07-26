@@ -79,6 +79,23 @@ class MissionState:
 		first = max(0, self.next_index - 1)
 		return [(x, y) for x, y, _ in self.mission[first:]]
 
+	def leg_reference(self, index, ax, ay):
+		"""The one mission leg a search is being asked to solve, as the two points it runs between.
+
+		Per leg rather than the whole remaining mission because a survey pattern folds back on itself.
+		The tube round the full polyline is a union, so rows closer together than the corridor radius
+		merge into a single blob and bound the search far more loosely than intended; and distance to
+		the full polyline reads a point on one row as being on course because it happens to be near
+		the next row over. Neither is visible on a single outbound leg, which is why it went unnoticed.
+
+		The first leg of a mission has no preceding waypoint, so the search's own start anchors it.
+		Every other leg is anchored to the mission alone and so stays where the survey line is rather
+		than following the vessel around."""
+		if index <= 0:
+			return [(ax, ay), (self.mission[0][0], self.mission[0][1])]
+
+		return [(self.mission[index - 1][0], self.mission[index - 1][1]), (self.mission[index][0], self.mission[index][1])]
+
 	def note_failure(self, index):
 		"""Counts consecutive failures against a waypoint. Returns True once it has failed often
 		enough to give up on, so a single unlucky search cannot drop a waypoint."""

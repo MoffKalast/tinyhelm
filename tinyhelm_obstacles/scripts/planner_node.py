@@ -24,10 +24,13 @@ RESULT_CODES = {
 
 class PlannerNode:
 	"""Answers one question: how do I get from here to there without hitting anything and without
-	leaving the corridor. 
+	leaving the corridor. It holds no mission, no progress and no policy, so there is nothing here to
+	go stale and nothing to reset.
 
 	A search takes long enough that several costmap updates will land during one. Rather than lock the
-	map for the duration, each request takes a snapshot of the latest field and plans against that.
+	map for the duration, each request takes a snapshot of the latest field and plans against that,
+	which is both the cheapest and the most honest answer to "always use the newest data": a reply is
+	explicitly an answer about the map as it stood when the request arrived.
 
 	It also re-examines the route the monitor asked it to watch on every costmap update. That check
 	needs the distance field and nothing else, so doing it here keeps the monitor free of the grid
@@ -101,7 +104,7 @@ class PlannerNode:
 
 		self.review_watched()
 
-	def field_for(self, clearance, corridor):
+	def field_for(self, clearance, corridor, centreline=None, divergence_radius=0.0):
 		with self.lock:
 			if self.dist is None:
 				return None
@@ -110,7 +113,7 @@ class PlannerNode:
 			res = self.res
 
 		field = CostField()
-		field.adopt(res, origin[0], origin[1], dist, clearance, self.soft_radius, corridor)
+		field.adopt(res, origin[0], origin[1], dist, clearance, self.soft_radius, corridor, centreline, divergence_radius)
 		return field
 
 	def review_watched(self):
@@ -189,11 +192,11 @@ class PlannerNode:
 			rospy.logerr("planner: request %d failed:\n%s", msg.request_id, traceback.format_exc())
 			self.publish_reply(msg.request_id, PlanReply.INTERNAL_ERROR, [], False, 0.0, 0)
 
-	def corridor_for(self, msg):
-		if len(msg.corridor) < 2:
+	def corridor_for(self, centreline, msg):
+		if len(centreline) < 2:
 			return None
 
-		corridor = corridor_from_polyline([(p.x, p.y) for p in msg.corridor], msg.corridor_radius)
+		corridor = corridor_from_polyline(centreline, msg.corridor_radius)
 
 		# The tube stays anchored to the mission, so a vessel pushed off its line can end up outside it
 		# with nowhere legal to begin a search. A disc at the start restores somewhere to start from
@@ -202,9 +205,10 @@ class PlannerNode:
 		return corridor
 
 	def solve(self, msg):
-		corridor = self.corridor_for(msg)
+		centreline = [(p.x, p.y) for p in msg.corridor]
+		corridor = self.corridor_for(centreline, msg)
 
-		field = self.field_for(msg.clearance, corridor)
+		field = self.field_for(msg.clearance, corridor, centreline, msg.corridor_radius)
 		if field is None:
 			rospy.logwarn_throttle(5.0, "planner: request %d arrived before any costmap" % msg.request_id)
 			self.publish_reply(msg.request_id, PlanReply.NO_COSTMAP, [], False, 0.0, 0)

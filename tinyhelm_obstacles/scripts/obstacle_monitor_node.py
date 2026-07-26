@@ -201,16 +201,18 @@ class ObstacleMonitorNode:
 		self.awaiting = self.request_id
 		self.awaiting_since = rospy.Time.now()
 		self.attempts = 1
-		self.publish_request(start, goal)
+		self.publish_request(start, goal, index)
 
-	def publish_request(self, start, goal):
+	def publish_request(self, start, goal, index):
 		msg = PlanRequest()
 		msg.request_id = self.awaiting
 		msg.start = Point(start[0], start[1], 0.0)
 		msg.goal = Point(goal[0], goal[1], 0.0)
 		msg.clearance = self.clearance()
 		msg.soft_radius = self.soft_radius
-		msg.corridor = [Point(x, y, 0.0) for x, y in self.state.corridor_polyline()]
+		# Only the leg being solved, not the whole remaining mission. The search is held to a tube round
+		# this and is steered toward the line itself, and both go wrong on a pattern that doubles back.
+		msg.corridor = [Point(x, y, 0.0) for x, y in self.state.leg_reference(index, start[0], start[1])]
 		msg.corridor_radius = self.corridor_radius
 		self.request_pub.publish(msg)
 
@@ -220,10 +222,10 @@ class ObstacleMonitorNode:
 			self.abandon_walk()
 			return
 
-		start, goal, _ = pending
+		start, goal, index = pending
 		self.attempts += 1
 		self.awaiting_since = rospy.Time.now()
-		self.publish_request(start, goal)
+		self.publish_request(start, goal, index)
 
 	def check_timeout(self, _):
 		"""A planner that has died and one still thinking look identical from here, so an outstanding
