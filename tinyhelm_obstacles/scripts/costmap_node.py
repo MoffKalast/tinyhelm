@@ -25,15 +25,17 @@ class CostmapNode:
 	sensors go quiet, which is exactly when a stale map is most dangerous."""
 
 	def __init__(self):
-		self.planning_frame = rospy.get_param("/planning_frame", "local")
+		self.planning_frame = rospy.get_param("/planning_frame", "local") 
 		self.robot_frame = rospy.get_param("/robot_frame", "base_link")
 
-		self.res = rospy.get_param("~resolution", 0.5)
-		self.extent = rospy.get_param("~extent", 200.0)
-		self.soft_radius = rospy.get_param("~soft_radius", 15.0)
+		self.params = rospy.get_param("/tinyhelm_obstacles", {})
+		if not self.params:
+			rospy.logwarn("No parameters found under 'tinyhelm_obstacles'. Did you load the YAML file?")
+			raise SystemExit(1)
 
-		self.publish_rate = rospy.get_param("~publish_rate", 10.0)
-		self.transform_timeout = rospy.get_param("~transform_timeout", 0.1)
+		self.res = self.params.get('costmap_resolution')
+		self.extent = self.params.get('costmap_size')
+		self.soft_radius = self.params.get('soft_radius')
 
 		size_cells = int(round(self.extent / self.res))
 
@@ -43,12 +45,12 @@ class CostmapNode:
 			size_cells,
 			inflate_radius=0.0,
 			soft_radius=self.soft_radius,
-			confirm_seconds=rospy.get_param("~confirm_seconds", 5.0),
-			memory_seconds=rospy.get_param("~memory_seconds", 15.0),
-			grace_seconds=rospy.get_param("~grace_seconds", 3.0),
-			forget_ratio=rospy.get_param("~forget_ratio", 2.0),
-			confirm_period=rospy.get_param("~confirm_period", 1.0),
-			scroll_hysteresis_cells=rospy.get_param("~scroll_hysteresis_cells", 5),
+			confirm_seconds=self.params.get('confirm_seconds'),
+			memory_seconds=self.params.get('memory_seconds'),
+			grace_seconds=self.params.get('grace_seconds'),
+			forget_ratio=self.params.get('forget_ratio'),
+			confirm_period=self.params.get('confirm_period'),
+			scroll_hysteresis_cells=self.params.get('scroll_hysteresis_cells'),
 		)
 
 		self.tf_buffer = tf2_ros.Buffer()
@@ -63,7 +65,7 @@ class CostmapNode:
 
 		rospy.loginfo("costmap: %.0fm window at %.2fm (%d cells), soft radius %.1fm, frame %s", self.extent, self.res, size_cells, self.soft_radius, self.planning_frame)
 
-		self.timer = rospy.Timer(rospy.Duration(1.0 / self.publish_rate), self.maintain)
+		self.timer = rospy.Timer(rospy.Duration(0.1), self.maintain)
 
 	def robot_position(self):
 		"""A pose is not optional: without one there is no window to maintain. Waits rather than
@@ -82,7 +84,7 @@ class CostmapNode:
 	def cloud_to_xy(self, msg):
 		if msg.header.frame_id != self.planning_frame:
 			try:
-				tf = self.tf_buffer.lookup_transform(self.planning_frame, msg.header.frame_id, msg.header.stamp, rospy.Duration(self.transform_timeout))
+				tf = self.tf_buffer.lookup_transform(self.planning_frame, msg.header.frame_id, msg.header.stamp, rospy.Duration(0.1))
 				msg = do_transform_cloud(msg, tf)
 			except tf2_ros.TransformException as e:
 				rospy.logwarn_throttle(5.0, "costmap: cloud transform failed: %s" % e)

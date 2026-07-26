@@ -185,26 +185,29 @@ class LineFollowingController:
 
 		ROBOT_FRAME = rospy.get_param('/robot_frame', 'base_link')
 		PLANNING_FRAME = rospy.get_param('/planning_frame', 'local')
+
+		self.params = rospy.get_param("/tinyhelm_waypoints", {})
+		if not self.params:
+			rospy.logwarn("No parameters found under 'tinyhelm_waypoints'. Did you load the YAML file?")
+			raise SystemExit(1)
 		
-		self.MIN_GOAL_XY_DIST = rospy.get_param('~xy_distance_threshold', 2.0)
-		self.MIN_GOAL_Z_DIST = rospy.get_param('~z_distance_threshold', 0.5)
+		self.MIN_GOAL_XY_DIST = self.params.get('xy_distance_threshold')
+		self.MIN_GOAL_Z_DIST = self.params.get('z_distance_threshold')
 
-		self.MAX_LINEAR_SPD = rospy.get_param('~max_linear_speed', 1.0)
-		self.MAX_VERTICAL_SPD = rospy.get_param('~max_vertical_speed', 0.5)
-		self.MAX_ANGULAR_SPD = rospy.get_param('~max_turning_speed', 2.0)
+		self.MAX_LINEAR_SPD = self.params.get('max_linear_speed')
+		self.MAX_VERTICAL_SPD = self.params.get('max_vertical_speed')
+		self.MAX_ANGULAR_SPD = self.params.get('max_turning_speed')
 
-		self.LINE_DIVERGENCE = rospy.get_param('~max_line_divergence', 1.0)
-		self.ROBOT_WIDTH = rospy.get_param('~robot_width', 0.0)
-		self.MIN_PROJECT_DIST = rospy.get_param('~min_project_dist', 0.15)
-		self.MAX_PROJECT_DIST = rospy.get_param('~max_project_dist', 1.2)
+		self.LINE_DIVERGENCE = self.params.get('max_line_divergence')
+		self.ROBOT_WIDTH = self.params.get('robot_width')
+		self.MIN_PROJECT_DIST = self.params.get('min_project_dist')
+		self.MAX_PROJECT_DIST =self.params.get('max_project_dist')
 
 		self.update_effective_divergence()
 
-		self.SIDE_OFFSET_MULT = rospy.get_param('~side_offset_mult', 0.8)
-
-		self.IGNORE_ALTITUDE = rospy.get_param('~ignore_altitude', True)
-
-		self.RATE = rospy.Rate(rospy.get_param('~rate', 30))
+		self.SIDE_OFFSET_MULT = self.params.get('side_offset_mult')
+		self.IGNORE_ALTITUDE = self.params.get('ignore_altitude')
+		self.RATE = rospy.Rate(self.params.get('rate'))
 
 		self.markers = DebugMarkers(PLANNING_FRAME, "/waypoints/_markers")
 
@@ -217,17 +220,8 @@ class LineFollowingController:
 		self.active_pub = rospy.Publisher("/waypoints/_active", Bool, queue_size=1, latch=True)
 		self.plan_pub = rospy.Publisher("/waypoints/_plan", Path, queue_size=1, latch=True)
 
-		self.pid = PID(
-			rospy.get_param('~P', 3.0),
-			rospy.get_param('~I', 0.001), 
-			rospy.get_param('~D', 65.0)
-		)
-
-		self.pid_vert = PID(
-			rospy.get_param('~P', 3.0),
-			rospy.get_param('~I', 0.001), 
-			rospy.get_param('~D', 65.0)
-		)
+		self.pid = PID(self.params.get('P'), self.params.get('I'),self.params.get('D'))
+		self.pid_vert = PID(self.params.get('P'), self.params.get('I'),self.params.get('D'))
 
 		self.goal_server = GoalServer(self.tf2_buffer, self.set_status, self.update_plan, lambda: (self.MIN_GOAL_XY_DIST, self.LINE_DIVERGENCE))
 		self.active = False

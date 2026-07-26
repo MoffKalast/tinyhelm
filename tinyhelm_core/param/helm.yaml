@@ -4,7 +4,7 @@ planning_frame: local
 tinyhelm_core:
 
   home_topic: /tinyhelm/set_home      # PoseStamped, defines failsafe location, auto-sets when enabled unless ever set manually
-  estop_topic: /tinyhelm/estop        # Trigger, stops immediately and goes to stationkeeping
+  estop_topic: /tinyhelm/estop        # Empty, stops immediately and goes to stationkeeping
   enabled_topic: /tinyhelm/enabled    # Bool, enables or disables the entire navigation stack
   markers_topic: /tinyhelm/markers    # MarkerArray, aggregate of the active controller and all monitors
 
@@ -22,25 +22,25 @@ tinyhelm_core:
 
   controllers:
     waypoints:
-      path: /waypoints/_path              #Path (out), mission or revision, it picks up wherever it already is
-      stop: /waypoints/_clear             #Empty (out)
+      path: /waypoints/_path              #Path, mission or revision, it picks up wherever it already is
+      stop: /waypoints/_clear             #Empty
       cmd_vel: /cmd_vel_waypoints         #Twist
       status: /waypoints/_status          #ControllerStatus (in)
       markers: /waypoints/_markers        #MarkerArray (in)
       current_path: /waypoints/_plan      #Path (in), what it is actually following, relayed to the monitors
 
     stationkeeping:
-      pose: /stationkeeping/_pose         #PoseStamped (out)
-      stop: /stationkeeping/_clear        #Empty (out)
+      pose: /stationkeeping/_pose         #PoseStamped
+      stop: /stationkeeping/_clear        #Empty
       cmd_vel: /cmd_vel_stationkeeping    #Twist
       status: /stationkeeping/_status     #ControllerStatus (in)
       markers: /stationkeeping/_markers   #MarkerArray (in)
 
   monitors:
     obstacles:
-      mission_in: /obstacles/_mission_in              #Path (out), the mission as executed, including any transit leg
-      current_path_in: /obstacles/_current_path_in    #Path (out), relay of what the active controller is following
-      revised_path_out: /obstacles/_revised_path_out  #Path (in), proposed refinement of the current path
+      mission_in: /obstacles/_mission_in              #Path, the mission as executed, including any transit leg
+      current_path_in: /obstacles/_current_path_in    #Path, relay of what the active controller is following
+      revised_path_out: /obstacles/_revised_path_out  #Path, proposed refinement of the current path
       status: /obstacles/_status                      #MonitorStatus (in)
       markers: /obstacles/_markers                    #MarkerArray (in)
 

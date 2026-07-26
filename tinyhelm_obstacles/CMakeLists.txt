@@ -44,28 +44,29 @@ add_executable(scan_to_cloud src/scan_to_cloud.cpp)
 add_dependencies(scan_to_cloud ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(scan_to_cloud ${catkin_LIBRARIES})
 
-catkin_install_python(PROGRAMS
-  scripts/costmap_node.py
-  scripts/planner_node.py
-  scripts/obstacle_monitor_node.py
+file(GLOB PYTHON_NODES "scripts/*_node.py")
+file(GLOB PYTHON_MODULES "scripts/*.py")
+
+list(REMOVE_ITEM PYTHON_MODULES ${PYTHON_NODES})
+
+catkin_install_python(
+  PROGRAMS ${PYTHON_NODES}
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
-set(tinyhelm_obstacles_PY_MODULES local_grid cost_field theta_star coarse_heuristic mission_state)
 file(MAKE_DIRECTORY ${CATKIN_DEVEL_PREFIX}/${CATKIN_PACKAGE_BIN_DESTINATION})
-foreach(module ${tinyhelm_obstacles_PY_MODULES})
-  execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
-    ${CMAKE_CURRENT_SOURCE_DIR}/scripts/${module}.py
-    ${CATKIN_DEVEL_PREFIX}/${CATKIN_PACKAGE_BIN_DESTINATION}/${module}.py
+
+foreach(module ${PYTHON_MODULES})
+  get_filename_component(name ${module} NAME)
+  execute_process(
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+      ${module}
+      ${CATKIN_DEVEL_PREFIX}/${CATKIN_PACKAGE_BIN_DESTINATION}/${name}
   )
 endforeach()
 
-install(FILES
-  scripts/local_grid.py
-  scripts/cost_field.py
-  scripts/theta_star.py
-  scripts/coarse_heuristic.py
-  scripts/mission_state.py
+install(
+  FILES ${PYTHON_MODULES}
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

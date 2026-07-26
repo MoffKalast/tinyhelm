@@ -12,17 +12,15 @@ tinyhelm_scan_to_unreliable_cloud:
     scan_topic: /scan_filtered
     cloud_topic: /unreliable_cloud
 
-tinyhelm_costmap:
-    resolution: 0.5
+tinyhelm_obstacles:
 
-    # Side of the local window in metres. Information leaves at the trailing edge as we move and is
-    # not recoverable, which is the accepted trade for never maintaining anything we sailed away from.
-    extent: 120.0
+    # Cell size for obstacle tracking
+    costmap_resolution: 0.5
 
-    # Distance over which the soft standoff penalty falls away to nothing, and therefore also the
-    # standoff a route settles at in open water. Distances are only ever tracked this far, so it also
-    # bounds how much of the map one changed cell can affect.
-    # Must match tinyhelm_planner/soft_radius: it is the range the published grid is encoded over.
+    # Side of the local window in metres. Information leaves at the trailing edge as we move
+    costmap_size: 150.0
+
+    # Distance over which the soft standoff penalty falls away to nothing on the costmap
     soft_radius: 6.0
 
     # Evidence is measured in seconds observed, not in hits. A cell earns at most one credit per
@@ -50,38 +48,27 @@ tinyhelm_costmap:
     # over a boundary does not shed the trailing edge repeatedly.
     scroll_hysteresis_cells: 5
 
-    publish_rate: 10.0
-
-tinyhelm_planner:
-    # Must match tinyhelm_costmap/soft_radius.
-    soft_radius: 6.0
-
-    # Downsampling factor for the heuristic layer. Only ever used to estimate cost, never to produce
-    # geometry, and everything about it errs optimistic, so a row of marina piles stays passable
-    # instead of merging into a wall.
+    # Downsampling factor for the heuristic layer. Only ever used to estimate cost, 4 * 0.5 m = 2 m cells
     coarse_factor: 4
 
     # How often an obstruction is restated while it persists.
     status_period: 1.0
 
-tinyhelm_obstacles:
-    # Full param path the usable corridor width is read from at runtime, has to point at the active
-    # controller. This is the clearance a route must keep: the vessel may sit anywhere within its
-    # allowed divergence under wind or current, so the corridor has to be clear wherever it ends up.
+    # Full param path the usable corridor width is read from at runtime, has to point at the active controller. 
+    # This is the clearance a route must keep: the vessel may sit anywhere within its allowed divergence under wind or current, so the corridor has to be clear wherever it ends up.
     divergence_param: /tinyhelm_waypoints/max_line_divergence
 
-    # Must match tinyhelm_planner/soft_radius.
-    soft_radius: 6.0
-
-    # How far off its line the vessel may ever be routed. Flat on purpose: it also bounds the region a
-    # search has to cover, so scaling it with leg length made long transits ruinously slow. There is no
-    # expansion limit any more, because this is what bounds the work.
+    # How far off its line the vessel may ever be routed. Flat on purpose: it also bounds the region a  search has to cover. 
     max_lateral_detour: 20.0
 
     # Consecutive failed attempts on a waypoint before giving up on it and routing to the next.
     unreachable_cycles: 3
 
+    #TODO
     waypoint_reached_radius: 6.0
+
+    # The longest we wait for the planner to find a solution before resetting it and retrying
+    planner_timeout: 2.0
 
     # A request left unanswered this long is resent, and dropped after this many retries.
     request_timeout: 2.0

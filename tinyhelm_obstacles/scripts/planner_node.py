@@ -39,14 +39,19 @@ class PlannerNode:
 	def __init__(self):
 		self.planning_frame = rospy.get_param("/planning_frame", "local")
 
-		self.soft_radius = rospy.get_param("~soft_radius", 15.0)
-		self.coarse_factor = rospy.get_param("~coarse_factor", 4)
-		self.status_period = rospy.get_param("~status_period", 1.0)
+		self.params = rospy.get_param("/tinyhelm_obstacles", {})
+		if not self.params:
+			rospy.logwarn("No parameters found under 'tinyhelm_obstacles'. Did you load the YAML file?")
+			raise SystemExit(1)
+
+		self.soft_radius = self.params.get('soft_radius')
+		self.coarse_factor = self.params.get('coarse_factor')
+		self.status_period = self.params.get('status_period')
+		self.res = self.params.get('costmap_resolution')
 
 		self.lock = threading.Lock()
 		self.dist = None
 		self.origin = (0.0, 0.0)
-		self.res = 0.5
 
 		self.watched = []
 		self.watch_clearance = 0.0

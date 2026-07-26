@@ -30,16 +30,21 @@ class ObstacleMonitorNode:
 		self.planning_frame = rospy.get_param("/planning_frame", "local")
 		self.robot_frame = rospy.get_param("/robot_frame", "base_link")
 
-		self.divergence_param = rospy.get_param("~divergence_param", "/tinyhelm_waypoints/max_line_divergence")
-		self.soft_radius = rospy.get_param("~soft_radius", 15.0)
-		self.corridor_radius = rospy.get_param("~max_lateral_detour", 20.0)
-		self.request_timeout = rospy.get_param("~request_timeout", 2.0)
-		self.request_retries = rospy.get_param("~request_retries", 2)
+		self.params = rospy.get_param("/tinyhelm_obstacles", {})
+		if not self.params:
+			rospy.logwarn("No parameters found under 'tinyhelm_obstacles'. Did you load the YAML file?")
+			raise SystemExit(1)
+
+		self.divergence_param = self.params.get('divergence_param')
+		self.soft_radius = self.params.get('soft_radius')
+		self.corridor_radius = self.params.get('max_lateral_detour')
+		self.request_timeout = self.params.get('request_timeout')
+		self.request_retries = self.params.get('request_retries')
 
 		self.state = MissionState(
 			self.corridor_radius,
-			rospy.get_param("~waypoint_reached_radius", 6.0),
-			rospy.get_param("~unreachable_cycles", 3),
+			self.params.get('waypoint_reached_radius'),
+			self.params.get('unreachable_cycles'),
 		)
 
 		self.current_path = []
@@ -67,7 +72,7 @@ class ObstacleMonitorNode:
 		rospy.Subscriber("/obstacles/path_status", PathStatus, self.path_status_callback, queue_size=1)
 		rospy.Subscriber("/obstacles/plan_reply", PlanReply, self.plan_reply_callback, queue_size=5)
 
-		self.watchdog = rospy.Timer(rospy.Duration(0.5), self.check_timeout)
+		self.watchdog = rospy.Timer(rospy.Duration(self.params.get('planner_timeout')), self.check_timeout)
 
 		self.publish_status(MonitorStatus.OK, "No active mission.")
 		rospy.loginfo("obstacle monitor: corridor radius %.0fm, clearance follows %s", self.corridor_radius, self.divergence_param)

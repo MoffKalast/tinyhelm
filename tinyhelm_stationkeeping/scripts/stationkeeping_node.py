@@ -26,19 +26,20 @@ class StationKeepingNode:
 		self.ROBOT_FRAME = rospy.get_param('/robot_frame', 'base_link')
 		self.PLANNING_FRAME = rospy.get_param('/planning_frame', 'local')
 
-		self.MAX_LINEAR_SPD = rospy.get_param("~max_linear_speed", 0.45)
-		self.MAX_ANGULAR_SPD = rospy.get_param("~max_turning_speed", 0.9)
-		self.MAX_DIVEGENCE = rospy.get_param("~max_divergence", 5.0)
-		self.RATE = rospy.Rate(rospy.get_param("~rate", 30))
+		self.params = rospy.get_param("/tinyhelm_stationkeeping", {})
+		if not self.params:
+			rospy.logwarn("No parameters found under 'tinyhelm_stationkeeping'. Did you load the YAML file?")
+			raise SystemExit(1)
 
-		self.DEADZONE_FRACT = rospy.get_param("~deadzone_fraction", 0.1)
+		self.MAX_LINEAR_SPD = self.params.get('max_linear_speed')
+		self.MAX_ANGULAR_SPD = self.params.get('max_turning_speed')
+		self.MAX_DIVEGENCE = self.params.get('max_divergence')
+		self.RATE = self.params.get('rate')
+
+		self.DEADZONE_FRACT = self.params.get('deadzone_fraction')
 		self.enabled = False
 		self.goal_pose = None  # PoseStamped
-		self.pid = PID(
-			rospy.get_param('~P', 3.0),
-			rospy.get_param('~I', 0.001),
-			rospy.get_param('~D', 65.0)
-		)
+		self.pid = PID(self.params.get('P'), self.params.get('I'),self.params.get('D'))
 		self.deadzone = self.DEADZONE_FRACT * self.MAX_DIVEGENCE
 
 		self.tf2_buffer = tf2_ros.Buffer()
