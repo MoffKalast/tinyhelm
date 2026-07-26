@@ -19,16 +19,15 @@ class LocalGrid:
 	losing it between sightings. Because credit is capped, how long anything survives after it stops
 	being seen is bounded and proportional to how long it was really there.
 
-	The inflated distance field is maintained alongside the evidence rather than rebuilt, which is
-	what keeps a 10Hz update off the critical path. Distances are clamped at soft_radius because
+	The distance field is maintained alongside the evidence rather than rebuilt, which is what keeps
+	a 10Hz update off the critical path. Distances are clamped at soft_radius because
 	nothing beyond it affects planning cost, and that clamp is also what makes the update local: a
 	cell that changes can only influence distances within soft_radius of itself."""
 
-	def __init__(self, resolution, size_cells, inflate_radius, soft_radius, confirm_seconds=5.0, memory_seconds=15.0, grace_seconds=3.0, forget_ratio=2.0, confirm_period=1.0, scroll_hysteresis_cells=5):
+	def __init__(self, resolution, size_cells, soft_radius, confirm_seconds=5.0, memory_seconds=15.0, grace_seconds=3.0, forget_ratio=2.0, confirm_period=1.0, scroll_hysteresis_cells=5):
 		self.res = resolution
 		self.size = int(size_cells)
-		self.inflate = inflate_radius
-		self.soft = max(soft_radius, inflate_radius + resolution)
+		self.soft = soft_radius
 
 		self.confirm = max(1, int(round(confirm_seconds / confirm_period)))
 		self.memory = max(self.confirm + 1, int(round(memory_seconds / confirm_period)))

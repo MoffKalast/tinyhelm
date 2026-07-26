@@ -3,7 +3,7 @@ uint32 request_id
 geometry_msgs/Point start
 geometry_msgs/Point goal
 
-# Hard clearance the route must keep from any obstacle, and the distance over which the soft standoff penalty falls away to nothing. 
+# Hard clearance the route must keep from any obstacle. The distance over which the soft standoff penalty falls away is not sent: both ends read soft_radius from the same parameters.
 float64 clearance
 
 # The route may not leave a tube of corridor_radius around this polyline. 

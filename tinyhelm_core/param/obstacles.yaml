@@ -21,7 +21,7 @@ tinyhelm_obstacles:
     costmap_size: 150.0
 
     # Distance over which the soft standoff penalty falls away to nothing on the costmap
-    soft_radius: 6.0
+    soft_radius: 8.0
 
     # Evidence is measured in seconds observed, not in hits. A cell earns at most one credit per
     # confirm_period however many returns land in it, which is the only thing that separates a piling

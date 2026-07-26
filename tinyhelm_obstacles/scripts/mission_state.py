@@ -18,8 +18,7 @@ class MissionState:
 	rebuilt afterwards. Building on demand removes the possibility rather than fixing an instance of
 	it: there is nowhere for a stale tube to live."""
 
-	def __init__(self, corridor_radius, waypoint_reached_radius, unreachable_cycles):
-		self.corridor_radius = corridor_radius
+	def __init__(self, waypoint_reached_radius, unreachable_cycles):
 		self.waypoint_reached_radius = waypoint_reached_radius
 		self.unreachable_cycles = unreachable_cycles
 
@@ -33,9 +32,6 @@ class MissionState:
 		self.next_index = 0
 		self.failures = {}
 		self.skipped = set()
-
-	def clear(self):
-		self.set_mission([])
 
 	def active(self):
 		return len(self.mission) > 0 and self.next_index < len(self.mission)

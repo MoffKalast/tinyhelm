@@ -1,24 +1,15 @@
 #!/usr/bin/env python3
-import math
-
-import numpy as np
 import rospy
 import tf2_geometry_msgs
 import tf2_ros
 
 from geometry_msgs.msg import Point, PoseStamped
 from nav_msgs.msg import Path
+from shapely.geometry import LineString
+from shapely.geometry import Point as ShapelyPoint
+from shapely.ops import unary_union
 from visualization_msgs.msg import Marker, MarkerArray
 
-try:
-	from shapely.geometry import LineString
-	from shapely.geometry import Point as ShapelyPoint
-	from shapely.ops import unary_union
-	HAVE_SHAPELY = True
-except ImportError:
-	HAVE_SHAPELY = False
-
-from cost_field import Capsule, corridor_from_polyline
 from mission_state import WALK_ABANDONED, WALK_RUNNING, WALK_WITHHELD, MissionState, ReplanWalk, drop_passed_legs
 from tinyhelm_core.msg import MonitorStatus
 from tinyhelm_obstacles.msg import PathStatus, PathWatch, PlanReply, PlanRequest
@@ -46,13 +37,11 @@ class ObstacleMonitorNode:
 			raise SystemExit(1)
 
 		self.divergence_param = self.params.get('divergence_param')
-		self.soft_radius = self.params.get('soft_radius')
 		self.corridor_radius = self.params.get('max_lateral_detour')
 		self.request_timeout = self.params.get('request_timeout')
 		self.request_retries = self.params.get('request_retries')
 
 		self.state = MissionState(
-			self.corridor_radius,
 			self.params.get('waypoint_reached_radius'),
 			self.params.get('unreachable_cycles'),
 		)
@@ -219,7 +208,6 @@ class ObstacleMonitorNode:
 		msg.start = Point(start[0], start[1], 0.0)
 		msg.goal = Point(goal[0], goal[1], 0.0)
 		msg.clearance = self.clearance()
-		msg.soft_radius = self.soft_radius
 		# Only the leg being solved, not the whole remaining mission. The search is held to a tube round
 		# this and is steered toward the line itself, and both go wrong on a pattern that doubles back.
 		msg.corridor = [Point(x, y, 0.0) for x, y in self.state.leg_reference(index, start[0], start[1])]
@@ -395,20 +383,13 @@ class ObstacleMonitorNode:
 
 	def corridor_silhouette(self, polyline, position):
 		"""Boundary of the union of the leg tubes and the disc at the vessel, as unordered pairs of
-		endpoints.
+		endpoints. Buffering the polyline produces the same stadium chain the planner builds capsule by
+		capsule, joins included, so the union is one call rather than a stamp per leg.
 
 		Pairs rather than a ring because a LINE_LIST needs no ordering, and so needs no case for either
 		of the two things a pattern that doubles back produces: gaps enclosed between legs, and a piece
 		detached from the rest. The detached case is worth seeing rather than smoothing away, since a
 		vessel whose disc no longer touches the tube has nowhere legal for a correction to begin."""
-		if HAVE_SHAPELY:
-			return self.silhouette_exact(polyline, position)
-
-		return self.silhouette_raster(polyline, position)
-
-	def silhouette_exact(self, polyline, position):
-		"""Buffering the polyline produces the same stadium chain the planner builds capsule by capsule,
-		joins included, so the union is one call rather than a stamp per leg."""
 		shapes = [LineString(polyline).buffer(self.corridor_radius, resolution=8)]
 		if position is not None:
 			shapes.append(ShapelyPoint(position[0], position[1]).buffer(self.corridor_radius, resolution=8))
@@ -420,43 +401,6 @@ class ObstacleMonitorNode:
 			for ring in [geom.exterior] + list(geom.interiors):
 				coords = list(ring.coords)
 				segments.extend((coords[i - 1], coords[i]) for i in range(1, len(coords)))
-
-		return segments
-
-	def silhouette_raster(self, polyline, position):
-		"""Fallback for a system without shapely. Rasterises the union coarsely and emits every cell
-		edge with the region on one side and not the other, which gives the same unordered pairs and
-		needs no contour tracing. Staircased, and deliberately so: this is roughly the resolution the
-		search itself tests the corridor at."""
-		capsules = corridor_from_polyline(polyline, self.corridor_radius)
-		if position is not None:
-			capsules.append(Capsule(position[0], position[1], position[0], position[1], self.corridor_radius))
-
-		res = max(1.0, 0.1 * self.corridor_radius)
-		xs = [x for c in capsules for x in (c.x1, c.x2)]
-		ys = [y for c in capsules for y in (c.y1, c.y2)]
-		x0 = min(xs) - self.corridor_radius - res
-		y0 = min(ys) - self.corridor_radius - res
-		cols = int(math.ceil((max(xs) + self.corridor_radius + res - x0) / res)) + 1
-		rows = int(math.ceil((max(ys) + self.corridor_radius + res - y0) / res)) + 1
-
-		gx, gy = np.meshgrid(x0 + np.arange(cols) * res, y0 + np.arange(rows) * res)
-
-		inside = np.zeros((rows, cols), dtype=bool)
-		for capsule in capsules:
-			inside |= capsule.contains(gx, gy)
-
-		segments = []
-
-		# A boundary edge is one whose two adjacent sample points disagree, so the two comparisons below
-		# are the whole outline. Vertical edges first, then horizontal.
-		for r, c in zip(*np.nonzero(inside[:, :-1] != inside[:, 1:])):
-			x = x0 + (c + 0.5) * res
-			segments.append(((x, y0 + (r - 0.5) * res), (x, y0 + (r + 0.5) * res)))
-
-		for r, c in zip(*np.nonzero(inside[:-1, :] != inside[1:, :])):
-			y = y0 + (r + 0.5) * res
-			segments.append(((x0 + (c - 0.5) * res, y), (x0 + (c + 0.5) * res, y)))
 
 		return segments
 

@@ -4,8 +4,8 @@
 	<arg name="planner_config" default="$(find tinyhelm_core)/param/planner_asv.yaml"/>
 	<arg name="obstacles_config" default="$(find tinyhelm_core)/param/obstacles.yaml"/>
 
-	<!-- The monitor reads its clearance off the active controller's params, hence planner_config -->
 	<rosparam file="$(arg helm_config)" command="load"/>
+	<!-- The monitor reads its clearance off the active controller's params, hence planner_config -->
 	<rosparam file="$(arg planner_config)" command="load"/>
 	<rosparam file="$(arg obstacles_config)" command="load"/>
 

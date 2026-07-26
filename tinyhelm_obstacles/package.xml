@@ -12,7 +12,6 @@
 
     <depend>rospy</depend>
     <depend>roscpp</depend>
-    <depend>dynamic_reconfigure</depend>
     <depend>laser_geometry</depend>
     <depend>tf2_ros</depend>
     <depend>tf2_sensor_msgs</depend>
@@ -21,7 +20,9 @@
     <depend>nav_msgs</depend>
     <depend>sensor_msgs</depend>
     <depend>std_msgs</depend>
-    <depend>move_base_msgs</depend>
+    <depend>visualization_msgs</depend>
     <depend>tinyhelm_core</depend>
+    <depend>python3-numpy</depend>
+    <depend>python3-scipy</depend>
     <depend>python3-shapely</depend>
 </package>

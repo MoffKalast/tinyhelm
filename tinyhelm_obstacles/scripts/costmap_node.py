@@ -16,7 +16,7 @@ from local_grid import LocalGrid
 
 class CostmapNode:
 	"""Owns everything to do with obstacle evidence: the clouds, the rolling window, decay, and the
-	inflated distance field. Publishes that field as a plain nav_msgs/OccupancyGrid carrying cost on
+	distance field. Publishes that field as a plain nav_msgs/OccupancyGrid carrying cost on
 	the usual convention, so it needs no message of its own and renders in rviz as an ordinary
 	costmap.
 
@@ -43,7 +43,6 @@ class CostmapNode:
 		self.grid = LocalGrid(
 			self.res,
 			size_cells,
-			inflate_radius=0.0,
 			soft_radius=self.soft_radius,
 			confirm_seconds=self.params.get('confirm_seconds'),
 			memory_seconds=self.params.get('memory_seconds'),

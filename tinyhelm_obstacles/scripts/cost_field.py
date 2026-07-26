@@ -1,6 +1,5 @@
 import math
 import numpy as np
-from scipy import ndimage
 
 LETHAL = float("inf")
 
@@ -11,11 +10,6 @@ LETHAL = float("inf")
 # a larger weight buys detours that budget_factor then throws away as unplannable.
 SOFT_WEIGHT = 2.0
 
-# How much a path pays for straying from the leg it is meant to be running, at the divergence fence,
-# again as a multiple of the distance travelled. An order of magnitude below SOFT_WEIGHT so that an
-# obstacle always outranks the line: the worst passable water costs three times its length to cross
-# and the fence edge only one and a fifth, so this steers where there is a free choice and gives way
-# entirely where there is not.
 DIVERGENCE_WEIGHT = 2.0
 
 def segment_distance(px, py, ax, ay, bx, by):
@@ -74,9 +68,10 @@ class CostField:
 	centre themselves between obstacles where they cannot. An optional corridor (union of capsules
 	around the strategic legs) marks everything outside the allowed tube unplannable as well.
 
-	Obstacle lethality and corridor violation are deliberately separate queries. They used to be the
-	same predicate, which made a waypoint merely outside its corridor indistinguishable from one
-	sitting on a rock, and the caller would then route past it as though it were occupied.
+	Corridor violation is answerable on its own through outside_corridor_at, separately from the
+	combined verdict cost_at gives. They used to be the same predicate, which made a waypoint merely
+	outside its corridor indistinguishable from one sitting on a rock, and the caller would then
+	route past it as though it were occupied.
 
 	All world queries treat anything outside the field extent as free, which is what lets the
 	planner treat unseen space beyond the loaded window as clear."""
@@ -95,40 +90,19 @@ class CostField:
 		self.divergence_radius = 0.0
 		self.divergence = None
 
-	def build(self, resolution, origin_x, origin_y, occupied, inflate_radius, soft_radius, corridor, centreline=None, divergence_radius=0.0):
-		"""occupied is a [row, col] = [y, x] boolean array; the field is square."""
-		self.res = resolution
-		self.origin_x = origin_x
-		self.origin_y = origin_y
-		self.size = occupied.shape[0]
-		self.inflate = inflate_radius
-
-		# Keeping soft strictly above inflate leaves the falloff a non-zero span to work over, so
-		# the ramp needs no special case for a soft radius configured below the hard one
-		self.soft = max(soft_radius, inflate_radius + resolution)
-
-		if occupied.any():
-			# Distances past soft_radius do not affect cost, so clamping there loses nothing and
-			# bounds how far a changed cell can reach, which is what makes incremental updates local
-			self.dist = np.minimum(ndimage.distance_transform_edt(~occupied) * resolution, self.soft)
-		else:
-			# An all-free window has no background to measure to and scipy's answer in that case is
-			# an artefact of the array bounds rather than anything meaningful
-			self.dist = np.full((self.size, self.size), self.soft, dtype=float)
-
-		self.rasterise_corridor(corridor)
-		self.adopt_centreline(centreline, divergence_radius)
-
 	def adopt(self, resolution, origin_x, origin_y, dist, inflate_radius, soft_radius, corridor, centreline=None, divergence_radius=0.0):
 		"""Takes a distance field computed elsewhere, which is how the planner consumes what the
 		costmap publishes. Inflation and the soft falloff are applied here rather than baked into the
-		grid, so the clearance can follow the controller's reconfigurable corridor width without the
+		grid, so the clearance can follow the controller's reconfigurable divergence band without the
 		costmap having to know anything about the vessel."""
 		self.res = resolution
 		self.origin_x = origin_x
 		self.origin_y = origin_y
 		self.size = dist.shape[0]
 		self.inflate = inflate_radius
+
+		# Keeping soft strictly above inflate leaves the falloff a non-zero span to work over, so
+		# the ramp needs no special case for a soft radius configured below the hard one
 		self.soft = max(soft_radius, inflate_radius + resolution)
 		self.dist = np.minimum(dist, self.soft)
 
@@ -260,14 +234,6 @@ class CostField:
 			return LETHAL
 
 		return self.divergence_cost(x, y)
-
-	def lethal_at(self, x, y):
-		"""Anything the search may not enter, for either reason."""
-		return self.cost_at(x, y) == LETHAL
-
-	def obstacle_lethal_at(self, x, y):
-		cell = self.world_to_cell(x, y)
-		return self.dist[cell[1], cell[0]] <= self.inflate if cell else False
 
 	def outside_corridor_at(self, x, y):
 		cell = self.world_to_cell(x, y)

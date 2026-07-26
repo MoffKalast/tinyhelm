@@ -11,9 +11,6 @@ GOAL_OUTSIDE_CORRIDOR = "goal_outside_corridor"
 START_TRAPPED = "start_trapped"
 NO_ROUTE = "no_route"
 
-def path_length(points):
-	return sum(math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]) for i in range(1, len(points)))
-
 def integrated_cost(field, ax, ay, bx, by, step):
 	"""Path cost of one straight segment in world space: length plus the soft proximity cost
 	integrated along it. LETHAL if any sample is lethal. Shares its convention with

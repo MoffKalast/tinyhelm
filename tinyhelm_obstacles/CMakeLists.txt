@@ -4,13 +4,12 @@ project(tinyhelm_obstacles)
 find_package(catkin REQUIRED COMPONENTS
   roscpp
   geometry_msgs
-  dynamic_reconfigure
   message_generation
   rospy
-  move_base_msgs
   nav_msgs
   sensor_msgs
   std_msgs
+  visualization_msgs
   laser_geometry
   tf2_ros
   tf2_sensor_msgs
@@ -32,7 +31,7 @@ generate_messages(
 )
 
 catkin_package(
-  CATKIN_DEPENDS roscpp geometry_msgs dynamic_reconfigure message_runtime rospy move_base_msgs nav_msgs sensor_msgs std_msgs laser_geometry tf2_ros tf2_sensor_msgs tf2_geometry_msgs tinyhelm_core
+  CATKIN_DEPENDS roscpp geometry_msgs message_runtime rospy nav_msgs sensor_msgs std_msgs visualization_msgs laser_geometry tf2_ros tf2_sensor_msgs tf2_geometry_msgs tinyhelm_core
 )
 
 include_directories(

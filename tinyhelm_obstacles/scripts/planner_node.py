@@ -47,10 +47,10 @@ class PlannerNode:
 		self.soft_radius = self.params.get('soft_radius')
 		self.coarse_factor = self.params.get('coarse_factor')
 		self.status_period = self.params.get('status_period')
-		self.res = self.params.get('costmap_resolution')
 
 		self.lock = threading.Lock()
 		self.dist = None
+		self.res = None
 		self.origin = (0.0, 0.0)
 
 		self.watched = []
@@ -80,7 +80,7 @@ class PlannerNode:
 		values = np.asarray(msg.data, dtype=np.int8).reshape(msg.info.height, msg.info.width)
 
 		# The costmap publishes the distance field with no hard inflation baked in, so clearance is
-		# applied here and can follow the controller's reconfigurable corridor width
+		# applied here and can follow the controller's reconfigurable divergence band
 		dist = decode_distance(values, 0.0, self.soft_radius)
 
 		with self.lock:
