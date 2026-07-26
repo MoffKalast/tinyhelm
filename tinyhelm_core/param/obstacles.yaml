@@ -2,7 +2,7 @@ tinyhelm_scan_to_reliable_cloud:
     frame: laser
 
      # points used for new obstacle detections
-    scan_topic: /scan_verified
+    scan_topic: /scan_filtered
     cloud_topic: /reliable_cloud
 
 tinyhelm_scan_to_unreliable_cloud:
@@ -23,19 +23,19 @@ tinyhelm_costmap:
     # standoff a route settles at in open water. Distances are only ever tracked this far, so it also
     # bounds how much of the map one changed cell can affect.
     # Must match tinyhelm_planner/soft_radius: it is the range the published grid is encoded over.
-    soft_radius: 10.0
+    soft_radius: 6.0
 
     # Evidence is measured in seconds observed, not in hits. A cell earns at most one credit per
     # confirm_period however many returns land in it, which is the only thing that separates a piling
     # from a workboat crossing our bow: both put the same number of returns into a cell.
-    confirm_period: 1.0
+    confirm_period: 0.2
 
     # How long something must be seen before it counts as an obstacle.
-    confirm_seconds: 5.0
+    confirm_seconds: 0.8
 
     # Credit ceiling. This bounds how long anything survives after it stops being seen, so a brief
     # smear clears quickly while a structure watched for minutes persists.
-    memory_seconds: 15.0
+    memory_seconds: 60.0
 
     # Gap in observations tolerated before we start doubting a cell. Covers beam wander in swell and
     # brief occlusion, so a structure glimpsed intermittently holds its evidence between sightings.
@@ -52,7 +52,7 @@ tinyhelm_costmap:
 
 tinyhelm_planner:
     # Must match tinyhelm_costmap/soft_radius.
-    soft_radius: 15.0
+    soft_radius: 6.0
 
     # Downsampling factor for the heuristic layer. Only ever used to estimate cost, never to produce
     # geometry, and everything about it errs optimistic, so a row of marina piles stays passable
@@ -69,7 +69,7 @@ tinyhelm_obstacles:
     divergence_param: /tinyhelm_waypoints/max_line_divergence
 
     # Must match tinyhelm_planner/soft_radius.
-    soft_radius: 15.0
+    soft_radius: 6.0
 
     # How far off its line the vessel may ever be routed. Flat on purpose: it also bounds the region a
     # search has to cover, so scaling it with leg length made long transits ruinously slow. There is no
