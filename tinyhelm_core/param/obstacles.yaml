@@ -2,7 +2,7 @@ tinyhelm_scan_to_reliable_cloud:
     frame: laser
 
      # points used for new obstacle detections
-    scan_topic: /scan_filtered
+    scan_topic: /scan_verified
     cloud_topic: /reliable_cloud
 
 tinyhelm_scan_to_unreliable_cloud:
@@ -41,8 +41,10 @@ tinyhelm_costmap:
     # brief occlusion, so a structure glimpsed intermittently holds its evidence between sightings.
     grace_seconds: 3.0
 
-    # Seconds of silence needed to burn one second of accumulated credit.
-    forget_seconds: 2.0
+    # Seconds of silence needed to undo one second of observation. A ratio rather than seconds per
+    # credit, so shortening confirm_period for a faster reaction does not silently stretch how long
+    # anything survives after it stops being seen.
+    forget_ratio: 2.0
 
     # The window only follows the vessel once it has moved this many cells, so working back and forth
     # over a boundary does not shed the trailing edge repeatedly.

@@ -46,7 +46,7 @@ class CostmapNode:
 			confirm_seconds=rospy.get_param("~confirm_seconds", 5.0),
 			memory_seconds=rospy.get_param("~memory_seconds", 15.0),
 			grace_seconds=rospy.get_param("~grace_seconds", 3.0),
-			forget_seconds=rospy.get_param("~forget_seconds", 2.0),
+			forget_ratio=rospy.get_param("~forget_ratio", 2.0),
 			confirm_period=rospy.get_param("~confirm_period", 1.0),
 			scroll_hysteresis_cells=rospy.get_param("~scroll_hysteresis_cells", 5),
 		)

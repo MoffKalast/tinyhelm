@@ -49,6 +49,7 @@ class ObstacleMonitorNode:
 		self.awaiting_since = rospy.Time(0)
 		self.attempts = 0
 		self.blocked = False
+		self.last_status = None
 
 		self.tf_buffer = tf2_ros.Buffer()
 		self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
@@ -118,7 +119,7 @@ class ObstacleMonitorNode:
 		if not self.state.active():
 			self.current_path = []
 			self.publish_watch()
-			self.publish_markers([])
+			self.publish_markers([], None)
 			self.publish_status(MonitorStatus.OK, "No active mission.")
 			return
 
@@ -144,7 +145,7 @@ class ObstacleMonitorNode:
 			rospy.loginfo("obstacle monitor: %d waypoints remaining", len(self.state.remaining()))
 
 		self.publish_remaining()
-		self.publish_markers(self.state.corridor_polyline(position[0], position[1]))
+		self.publish_markers(self.state.corridor_polyline(), position)
 
 	def path_status_callback(self, msg):
 		"""The planner reports on the route rather than the monitor inspecting the map, so this is the
@@ -190,39 +191,34 @@ class ObstacleMonitorNode:
 			return
 
 		start, goal, index = pending
-		position = self.robot_position()
-		if position is None:
-			self.abandon_walk()
-			return
 
 		self.request_id += 1
 		self.awaiting = self.request_id
 		self.awaiting_since = rospy.Time.now()
 		self.attempts = 1
-		self.publish_request(start, goal, position)
+		self.publish_request(start, goal)
 
-	def publish_request(self, start, goal, position):
+	def publish_request(self, start, goal):
 		msg = PlanRequest()
 		msg.request_id = self.awaiting
 		msg.start = Point(start[0], start[1], 0.0)
 		msg.goal = Point(goal[0], goal[1], 0.0)
 		msg.clearance = self.clearance()
 		msg.soft_radius = self.soft_radius
-		msg.corridor = [Point(x, y, 0.0) for x, y in self.state.corridor_polyline(position[0], position[1])]
+		msg.corridor = [Point(x, y, 0.0) for x, y in self.state.corridor_polyline()]
 		msg.corridor_radius = self.corridor_radius
 		self.request_pub.publish(msg)
 
 	def resend(self):
 		pending = self.walk.pending_request() if self.walk else None
-		position = self.robot_position()
-		if pending is None or position is None:
+		if pending is None:
 			self.abandon_walk()
 			return
 
 		start, goal, _ = pending
 		self.attempts += 1
 		self.awaiting_since = rospy.Time.now()
-		self.publish_request(start, goal, position)
+		self.publish_request(start, goal)
 
 	def check_timeout(self, _):
 		"""A planner that has died and one still thinking look identical from here, so an outstanding
@@ -250,6 +246,16 @@ class ObstacleMonitorNode:
 		self.awaiting = None
 		index = self.walk.target_index()
 
+		if msg.result in (PlanReply.INTERNAL_ERROR, PlanReply.NO_COSTMAP):
+			# Not an answer about the waypoint, so it must not count toward giving up on one. Dropping
+			# the correction here rather than retrying is deliberate: the next steady report comes in a
+			# second and will start a fresh attempt, where a retry would go straight back into the same
+			# fault and burn the timeout budget doing it.
+			rospy.logwarn("obstacle monitor: planner could not answer request %d (%s)", msg.request_id, self.reason_text(msg.result))
+			self.abandon_walk()
+			self.publish_status(MonitorStatus.WARN, "Planner could not answer: %s." % self.reason_text(msg.result))
+			return
+
 		reachable = msg.result == PlanReply.OK and len(msg.path) >= 2
 		outcome = self.walk.accept(reachable, [(p.x, p.y) for p in msg.path], self.reason_text(msg.result))
 
@@ -266,6 +272,7 @@ class ObstacleMonitorNode:
 			PlanReply.START_TRAPPED: "no clear water around the vessel to start from",
 			PlanReply.NO_ROUTE: "no route within the corridor",
 			PlanReply.NO_COSTMAP: "no costmap yet",
+			PlanReply.INTERNAL_ERROR: "the planner failed internally",
 		}.get(result, "unknown")
 
 	def finish_walk(self, outcome, index=None, result=None):
@@ -334,16 +341,30 @@ class ObstacleMonitorNode:
 		self.watch_pub.publish(msg)
 
 	def publish_status(self, status, message):
+		# The planner now reports steadily rather than only on change, which is what keeps progress and
+		# the corridor overlay current, but it would otherwise have us restating an unchanged status to
+		# the helm every second. The topic is latched, so a late subscriber still gets the current
+		# state, and the helm sees a clean edge when one actually happens.
+		if (status, message) == self.last_status:
+			return
+
+		self.last_status = (status, message)
+
 		msg = MonitorStatus()
 		msg.status = status
 		msg.message = message
 		self.status_pub.publish(msg)
 
-	def publish_markers(self, polyline):
+	def publish_markers(self, polyline, position):
 		arr = MarkerArray()
 		stamp = rospy.Time.now()
 		for i in range(1, len(polyline)):
 			arr.markers.append(self.corridor_marker(polyline[i - 1], polyline[i], i - 1, stamp))
+
+		# The planner grants a disc at the vessel so a boat pushed off its line still has somewhere
+		# legal to start from. Drawing it keeps what is shown the same as what is enforced.
+		if position is not None and len(polyline) >= 2:
+			arr.markers.append(self.corridor_marker(position, position, len(polyline), stamp))
 
 		self.markers_pub.publish(arr)
 

@@ -24,7 +24,7 @@ class LocalGrid:
 	nothing beyond it affects planning cost, and that clamp is also what makes the update local: a
 	cell that changes can only influence distances within soft_radius of itself."""
 
-	def __init__(self, resolution, size_cells, inflate_radius, soft_radius, confirm_seconds=5.0, memory_seconds=15.0, grace_seconds=3.0, forget_seconds=2.0, confirm_period=1.0, scroll_hysteresis_cells=5):
+	def __init__(self, resolution, size_cells, inflate_radius, soft_radius, confirm_seconds=5.0, memory_seconds=15.0, grace_seconds=3.0, forget_ratio=2.0, confirm_period=1.0, scroll_hysteresis_cells=5):
 		self.res = resolution
 		self.size = int(size_cells)
 		self.inflate = inflate_radius
@@ -33,8 +33,13 @@ class LocalGrid:
 		self.confirm = max(1, int(round(confirm_seconds / confirm_period)))
 		self.memory = max(self.confirm + 1, int(round(memory_seconds / confirm_period)))
 		self.grace = grace_seconds
-		self.forget = forget_seconds
 		self.confirm_period = confirm_period
+
+		# Seconds of silence needed to undo one second of observation. Held as a ratio rather than as
+		# seconds per credit because credit is counted in confirm_period units: a fixed seconds per
+		# credit silently stretches how long anything survives whenever confirm_period is shortened,
+		# so tuning for a faster reaction would quietly buy a far longer smear.
+		self.forget = forget_ratio * confirm_period
 		self.scroll_hysteresis = scroll_hysteresis_cells
 
 		self.credit = np.zeros((self.size, self.size), dtype=np.int16)

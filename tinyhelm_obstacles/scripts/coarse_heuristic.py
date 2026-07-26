@@ -14,8 +14,8 @@ OCTILE_OVERSHOOT = 1.0 + math.sqrt(2.0) - 2.0 / math.sqrt(2.0) + 1e-9
 class CoarseHeuristic:
 	"""Cost to the goal precomputed by Dijkstra over a downsampled copy of the window, used as the
 	heuristic for the full resolution search. Plain euclidean distance is a very weak bound here
-	because segment cost carries the soft proximity penalty on top of length, so the fine search
-	ends up expanding most of the corridor; this gives it something informed to aim at.
+	because segment cost carries the soft proximity penalty on top of length, so the fine search ends
+	up expanding most of the corridor; this gives it something informed to aim at.
 
 	Everything about the coarse layer errs optimistic, because a heuristic that overestimates makes
 	the search wrong rather than slow:
@@ -23,21 +23,39 @@ class CoarseHeuristic:
 	  - a coarse cell counts as blocked only when every fine cell inside it is blocked, so a row of
 	    marina piles stays passable instead of merging into a wall
 	  - inflation is applied in whole coarse cells, rounded down
-	  - only geometric length is accumulated, never the soft penalty
+	  - only geometric length and the cheapest soft penalty in each cell are accumulated
 	  - the octile overshoot is divided back out
 
-	Cells the coarse pass cannot reach are unreachable at full resolution too, since the coarse
-	layer is strictly more permissive, so those are reported as infinite and prune the fine search
-	outright."""
+	The layer only covers the costmap window, and the search deliberately does not stop there: unseen
+	space beyond the window is treated as clear everywhere else in the stack, and a leg longer than
+	the window has its goal outside it altogether. So anything the coarse grid holds no cell for falls
+	back to the straight line rather than being called unreachable, and an unreachable verdict is only
+	trusted when the corridor lies wholly inside the window."""
 
 	def __init__(self, field, gx, gy, factor=4):
 		self.factor = factor
 		self.res = field.res * factor
 		self.origin_x = field.origin_x
 		self.origin_y = field.origin_y
+		self.goal_x = gx
+		self.goal_y = gy
 
 		blocked, soft = self.downsample(field)
-		self.cost_to_goal = self.dijkstra(blocked, soft, gx, gy)
+		self.rows, self.cols = blocked.shape
+
+		goal = self.to_cell(gx, gy)
+		self.goal_inside = self.inside(goal)
+
+		# Seeding Dijkstra with a goal outside the grid indexed straight off the end of the array,
+		# which only happens once a leg reaches past the edge of the window
+		self.cost_to_goal = self.dijkstra(blocked, soft, goal) if self.goal_inside else {}
+
+		# A cell the optimistic layer cannot reach really is unreachable, but only if nothing could
+		# reach the goal from outside the window either. Asking whether the corridor touches the edge
+		# is far too blunt for that: a fifty metre leg with a twenty metre tube already touches the
+		# edge of a modest window. What matters is whether the goal's own reachable set does, since a
+		# route can only arrive from outside the window by entering that set through the border.
+		self.trust_unreachable = self.goal_inside and not self.reached_edge()
 
 	def downsample(self, field):
 		occupied = field.dist <= field.inflate
@@ -53,27 +71,35 @@ class CoarseHeuristic:
 		if rings > 0:
 			blocked = ndimage.binary_dilation(blocked, iterations=rings)
 
+		# Cheapest soft penalty available anywhere inside each coarse cell. Taking the minimum keeps
+		# the estimate below whatever a fine path through there would really pay, while still telling
+		# the search that threading a narrow gap costs more than open water. Without this the estimate
+		# ignores the soft penalty entirely and stays a factor of three too low.
+		shortfall = np.clip((field.soft - field.dist[:usable, :usable]) / (field.soft - field.inflate), 0.0, 1.0)
+		penalty = np.where(occupied[:usable, :usable], np.inf, SOFT_WEIGHT * shortfall * shortfall)
+		soft = penalty.reshape(n, self.factor, n, self.factor).min(axis=(1, 3))
+
 		# The fine search cannot leave the corridor either, so flooding the whole window is wasted
 		# work. any() again keeps it optimistic: a coarse cell counts as inside if any part of it is.
 		inside = field.corridor_ok[:usable, :usable].reshape(n, self.factor, n, self.factor).any(axis=(1, 3))
 		blocked |= ~inside
 
-		# Cheapest soft penalty available anywhere inside each coarse cell. Taking the minimum keeps
-		# the estimate below whatever a fine path through there would really pay, while still telling
-		# the search that threading a narrow gap costs more than open water. Without this the
-		# estimate ignores the soft penalty entirely and stays a factor of three too low.
-		shortfall = np.clip((field.soft - field.dist[:usable, :usable]) / (field.soft - field.inflate), 0.0, 1.0)
-		penalty = np.where(occupied[:usable, :usable], np.inf, SOFT_WEIGHT * shortfall * shortfall)
-		soft = penalty.reshape(n, self.factor, n, self.factor).min(axis=(1, 3))
-
 		return blocked, soft
+
+	def reached_edge(self):
+		last_col = self.cols - 1
+		last_row = self.rows - 1
+		return any(cx == 0 or cy == 0 or cx == last_col or cy == last_row for cx, cy in self.cost_to_goal)
 
 	def to_cell(self, x, y):
 		return int(math.floor((x - self.origin_x) / self.res)), int(math.floor((y - self.origin_y) / self.res))
 
-	def dijkstra(self, blocked, soft, gx, gy):
-		rows, cols = blocked.shape
-		goal = self.to_cell(gx, gy)
+	def inside(self, cell):
+		return 0 <= cell[0] < self.cols and 0 <= cell[1] < self.rows
+
+	def dijkstra(self, blocked, soft, goal):
+		if blocked[goal[1], goal[0]]:
+			return {}
 
 		cost = {}
 		queue = [(0.0, goal)]
@@ -86,7 +112,7 @@ class CoarseHeuristic:
 			here = soft[cell[1], cell[0]]
 			for ox, oy in NEIGHBOURS:
 				neighbour = (cell[0] + ox, cell[1] + oy)
-				if not (0 <= neighbour[0] < cols and 0 <= neighbour[1] < rows):
+				if not self.inside(neighbour):
 					continue
 				if neighbour in cost or blocked[neighbour[1], neighbour[0]]:
 					continue
@@ -98,8 +124,12 @@ class CoarseHeuristic:
 		return cost
 
 	def estimate(self, x, y):
-		distance = self.cost_to_goal.get(self.to_cell(x, y))
-		if distance is None:
-			return float("inf")
+		cell = self.to_cell(x, y)
+		if self.inside(cell):
+			distance = self.cost_to_goal.get(cell)
+			if distance is not None:
+				return distance / OCTILE_OVERSHOOT
+			if self.trust_unreachable:
+				return float("inf")
 
-		return distance / OCTILE_OVERSHOOT
+		return math.hypot(self.goal_x - x, self.goal_y - y)

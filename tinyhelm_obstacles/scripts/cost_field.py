@@ -36,6 +36,17 @@ class Capsule:
 	def contains(self, px, py):
 		return self.distance(px, py) <= self.radius
 
+	def contains_point(self, px, py):
+		"""Scalar version. The array path goes through numpy for the rasteriser, which costs a couple
+		of microseconds a call and is not worth paying on a per sample test inside the search."""
+		dx = self.x2 - self.x1
+		dy = self.y2 - self.y1
+		len2 = dx * dx + dy * dy
+		t = max(0.0, min(1.0, ((px - self.x1) * dx + (py - self.y1) * dy) / len2)) if len2 > 0.0 else 0.0
+		ox = px - (self.x1 + t * dx)
+		oy = py - (self.y1 + t * dy)
+		return ox * ox + oy * oy <= self.radius * self.radius
+
 def corridor_from_polyline(points, radius):
 	"""One capsule per leg of the polyline. Both the planner and the marker overlay derive the tube
 	from the same polyline this way, so what is drawn is what the search was actually held to."""
@@ -65,6 +76,7 @@ class CostField:
 		self.soft = 0.0
 		self.dist = None
 		self.corridor_ok = None
+		self.corridor = None
 
 	def build(self, resolution, origin_x, origin_y, occupied, inflate_radius, soft_radius, corridor):
 		"""occupied is a [row, col] = [y, x] boolean array; the field is square."""
@@ -105,6 +117,9 @@ class CostField:
 		self.rasterise_corridor(corridor)
 
 	def rasterise_corridor(self, corridor):
+		# Kept alongside the raster so the corridor can still be answered for outside the window
+		self.corridor = corridor or None
+
 		if not corridor:
 			self.corridor_ok = np.ones((self.size, self.size), dtype=bool)
 			return
@@ -155,9 +170,21 @@ class CostField:
 
 		return self.soft_cost(self.dist[cy, cx])
 
+	def in_corridor(self, x, y):
+		if not self.corridor:
+			return True
+
+		return any(capsule.contains_point(x, y) for capsule in self.corridor)
+
 	def cost_at(self, x, y):
 		cell = self.world_to_cell(x, y)
-		return self.cost_cell(*cell) if cell else 0.0
+		if cell:
+			return self.cost_cell(*cell)
+
+		# Unseen space beyond the window counts as clear of obstacles, but the corridor still applies
+		# out there. It is anchored to the mission rather than to the map, and a search allowed to slip
+		# round the edge of the window would be left with no bound on it at all.
+		return 0.0 if self.in_corridor(x, y) else LETHAL
 
 	def lethal_at(self, x, y):
 		"""Anything the search may not enter, for either reason."""
@@ -169,7 +196,10 @@ class CostField:
 
 	def outside_corridor_at(self, x, y):
 		cell = self.world_to_cell(x, y)
-		return not self.corridor_ok[cell[1], cell[0]] if cell else False
+		if cell:
+			return not self.corridor_ok[cell[1], cell[0]]
+
+		return not self.in_corridor(x, y)
 
 	def obstacle_distance_at(self, x, y):
 		"""Clamped at soft_radius inside the field; unseen space outside it reads as infinitely

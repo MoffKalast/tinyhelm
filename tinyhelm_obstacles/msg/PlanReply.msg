@@ -4,6 +4,7 @@ uint8 GOAL_OUTSIDE_CORRIDOR=2
 uint8 START_TRAPPED=3
 uint8 NO_ROUTE=4
 uint8 NO_COSTMAP=5
+uint8 INTERNAL_ERROR=6
 
 uint32 request_id
 uint8 result

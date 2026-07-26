@@ -66,11 +66,18 @@ class MissionState:
 	def remaining(self):
 		return self.mission[self.next_index:]
 
-	def corridor_polyline(self, rx, ry):
-		"""Vessel position followed by every waypoint still to visit. The tube around this is the only
-		thing bounding how far a correction may stray, and therefore also the only thing bounding how
-		much space a search has to cover."""
-		return [(rx, ry)] + [(x, y) for x, y, _ in self.remaining()]
+	def corridor_polyline(self):
+		"""The mission legs still to run, starting from the one currently being followed. The tube
+		around this is the only thing bounding how far a correction may stray, and therefore also the
+		only thing bounding how much space a search has to cover.
+
+		Deliberately independent of where the vessel is. Anchoring the near end to the vessel let the
+		tube sweep round as it manoeuvred, so it drifted a little further with every correction and
+		never came back; worse, it followed the vessel into whichever side of an obstacle got picked
+		first, so if that side turned out to be blocked there was no longer any corridor on the other
+		side to find a way through."""
+		first = max(0, self.next_index - 1)
+		return [(x, y) for x, y, _ in self.mission[first:]]
 
 	def note_failure(self, index):
 		"""Counts consecutive failures against a waypoint. Returns True once it has failed often

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import threading
 import time
+import traceback
 
 import numpy as np
 import rospy
@@ -9,7 +10,7 @@ from geometry_msgs.msg import Point
 from nav_msgs.msg import OccupancyGrid
 
 from coarse_heuristic import CoarseHeuristic
-from cost_field import CostField, corridor_from_polyline, decode_distance
+from cost_field import Capsule, CostField, corridor_from_polyline, decode_distance
 from theta_star import GOAL_IN_OBSTACLE, GOAL_OUTSIDE_CORRIDOR, NO_ROUTE, OK, START_TRAPPED, ThetaStar, smooth_path
 from tinyhelm_obstacles.msg import PathStatus, PathWatch, PlanReply, PlanRequest
 
@@ -49,6 +50,7 @@ class PlannerNode:
 
 		self.watched = []
 		self.watch_clearance = 0.0
+		self.warned_clearance = False
 		self.last_blocked = None
 		self.last_status = rospy.Time(0)
 
@@ -64,6 +66,12 @@ class PlannerNode:
 		rospy.loginfo("planner: waiting for a costmap on /obstacles/costmap")
 
 	def costmap_callback(self, msg):
+		try:
+			self.adopt_costmap(msg)
+		except Exception:
+			rospy.logerr("planner: costmap rejected:\n%s", traceback.format_exc())
+
+	def adopt_costmap(self, msg):
 		values = np.asarray(msg.data, dtype=np.int8).reshape(msg.info.height, msg.info.width)
 
 		# The costmap publishes the distance field with no hard inflation baked in, so clearance is
@@ -78,6 +86,12 @@ class PlannerNode:
 		self.review_watched()
 
 	def watch_callback(self, msg):
+		try:
+			self.adopt_watch(msg)
+		except Exception:
+			rospy.logerr("planner: watch rejected:\n%s", traceback.format_exc())
+
+	def adopt_watch(self, msg):
 		with self.lock:
 			self.watched = [(p.x, p.y) for p in msg.path]
 			self.watch_clearance = msg.clearance
@@ -107,6 +121,10 @@ class PlannerNode:
 		if len(route) < 2:
 			return
 
+		if clearance > self.soft_radius and not self.warned_clearance:
+			self.warned_clearance = True
+			rospy.logwarn("planner: clearance %.1fm exceeds soft_radius %.1fm, obstructions beyond the soft radius cannot be seen", clearance, self.soft_radius)
+
 		field = self.field_for(clearance, None)
 		if field is None:
 			return
@@ -124,7 +142,11 @@ class PlannerNode:
 			samples = max(1, int(length / step))
 			for s in range(samples + 1):
 				t = s / samples
-				gap = field.obstacle_distance_at(ax + t * (bx - ax), ay + t * (by - ay))
+				# Unseen space reads as infinitely clear, which is what keeps the window edge from
+				# looking like a wall, but reporting that as a clearance figure is meaningless. Capped
+				# at the soft radius so the number always means something; the threshold below is
+				# unaffected as long as the soft radius is the larger of the two.
+				gap = min(field.obstacle_distance_at(ax + t * (bx - ax), ay + t * (by - ay)), self.soft_radius)
 				worst = min(worst, gap)
 				if blocked_leg < 0 and gap < clearance:
 					blocked_leg = leg
@@ -135,11 +157,13 @@ class PlannerNode:
 		self.report(blocked_leg >= 0, blocked_leg, blocked_at, worst)
 
 	def report(self, blocked, leg, distance, clearance):
-		# Reported on every change, and repeated while obstructed so a monitor that came up late still
-		# learns about an intrusion without needing the whole thing restated at grid rate
+		# Reported on every change and otherwise at status_period, clear or not. The steady report is
+		# what the monitor advances its progress and redraws its corridor on, and it doubles as a
+		# heartbeat: a monitor that came up late still learns the state without the whole thing being
+		# restated at grid rate.
 		now = rospy.Time.now()
 		changed = blocked != self.last_blocked
-		if not changed and not (blocked and (now - self.last_status).to_sec() >= self.status_period):
+		if not changed and (now - self.last_status).to_sec() < self.status_period:
 			return
 
 		self.last_blocked = blocked
@@ -149,11 +173,34 @@ class PlannerNode:
 		msg.blocked = blocked
 		msg.blocked_leg = leg
 		msg.blocked_distance = distance
-		msg.min_clearance = 0.0 if clearance == float("inf") else clearance
+		msg.min_clearance = clearance
 		self.status_pub.publish(msg)
 
 	def request_callback(self, msg):
-		corridor = corridor_from_polyline([(p.x, p.y) for p in msg.corridor], msg.corridor_radius) if len(msg.corridor) >= 2 else None
+		"""Anything thrown in here would otherwise reach the monitor as silence, which it can only
+		resolve by waiting out a timeout and retrying the same request into the same fault. An answer
+		it can act on immediately is worth far more than a clean stack trace, so a failure is reported
+		as one."""
+		try:
+			self.solve(msg)
+		except Exception:
+			rospy.logerr("planner: request %d failed:\n%s", msg.request_id, traceback.format_exc())
+			self.publish_reply(msg.request_id, PlanReply.INTERNAL_ERROR, [], False, 0.0, 0)
+
+	def corridor_for(self, msg):
+		if len(msg.corridor) < 2:
+			return None
+
+		corridor = corridor_from_polyline([(p.x, p.y) for p in msg.corridor], msg.corridor_radius)
+
+		# The tube stays anchored to the mission, so a vessel pushed off its line can end up outside it
+		# with nowhere legal to begin a search. A disc at the start restores somewhere to start from
+		# without letting the tube itself follow the vessel around.
+		corridor.append(Capsule(msg.start.x, msg.start.y, msg.start.x, msg.start.y, msg.corridor_radius))
+		return corridor
+
+	def solve(self, msg):
+		corridor = self.corridor_for(msg)
 
 		field = self.field_for(msg.clearance, corridor)
 		if field is None:
