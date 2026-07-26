@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import math
 
+import numpy as np
 import rospy
 import tf2_geometry_msgs
 import tf2_ros
@@ -9,6 +10,15 @@ from geometry_msgs.msg import Point, PoseStamped
 from nav_msgs.msg import Path
 from visualization_msgs.msg import Marker, MarkerArray
 
+try:
+	from shapely.geometry import LineString
+	from shapely.geometry import Point as ShapelyPoint
+	from shapely.ops import unary_union
+	HAVE_SHAPELY = True
+except ImportError:
+	HAVE_SHAPELY = False
+
+from cost_field import Capsule, corridor_from_polyline
 from mission_state import WALK_ABANDONED, WALK_RUNNING, WALK_WITHHELD, MissionState, ReplanWalk, drop_passed_legs
 from tinyhelm_core.msg import MonitorStatus
 from tinyhelm_obstacles.msg import PathStatus, PathWatch, PlanReply, PlanRequest
@@ -363,50 +373,111 @@ class ObstacleMonitorNode:
 		self.status_pub.publish(msg)
 
 	def publish_markers(self, polyline, position):
+		"""One outline for the whole allowed region rather than a stadium per leg. Stacked stadiums are
+		unreadable on a survey pattern, where every leg overlaps its neighbours and the interior fills
+		with the flanks of tubes that are not the boundary of anything."""
 		arr = MarkerArray()
 		stamp = rospy.Time.now()
-		for i in range(1, len(polyline)):
-			arr.markers.append(self.corridor_marker(polyline[i - 1], polyline[i], i - 1, stamp))
 
-		# The planner grants a disc at the vessel so a boat pushed off its line still has somewhere
-		# legal to start from. Drawing it keeps what is shown the same as what is enforced.
-		if position is not None and len(polyline) >= 2:
-			arr.markers.append(self.corridor_marker(position, position, len(polyline), stamp))
+		# The old drawing published one marker id per leg, and rviz keeps anything it is not told to
+		# forget. Without this a mission with fewer legs than the last one leaves the surplus stadiums
+		# on screen for good, which looks exactly like the pile-up this replaces.
+		clear = Marker()
+		clear.header.frame_id = self.planning_frame
+		clear.header.stamp = stamp
+		clear.action = Marker.DELETEALL
+		arr.markers.append(clear)
+
+		if len(polyline) >= 2:
+			arr.markers.append(self.corridor_marker(self.corridor_silhouette(polyline, position), stamp))
 
 		self.markers_pub.publish(arr)
 
-	def corridor_marker(self, a, b, marker_id, stamp):
-		"""One leg of the corridor drawn as a stadium. This is the boundary the search is actually
-		held to, so it doubles as a picture of how much space a correction has to work in."""
+	def corridor_silhouette(self, polyline, position):
+		"""Boundary of the union of the leg tubes and the disc at the vessel, as unordered pairs of
+		endpoints.
+
+		Pairs rather than a ring because a LINE_LIST needs no ordering, and so needs no case for either
+		of the two things a pattern that doubles back produces: gaps enclosed between legs, and a piece
+		detached from the rest. The detached case is worth seeing rather than smoothing away, since a
+		vessel whose disc no longer touches the tube has nowhere legal for a correction to begin."""
+		if HAVE_SHAPELY:
+			return self.silhouette_exact(polyline, position)
+
+		return self.silhouette_raster(polyline, position)
+
+	def silhouette_exact(self, polyline, position):
+		"""Buffering the polyline produces the same stadium chain the planner builds capsule by capsule,
+		joins included, so the union is one call rather than a stamp per leg."""
+		shapes = [LineString(polyline).buffer(self.corridor_radius, resolution=8)]
+		if position is not None:
+			shapes.append(ShapelyPoint(position[0], position[1]).buffer(self.corridor_radius, resolution=8))
+
+		union = unary_union(shapes)
+
+		segments = []
+		for geom in getattr(union, "geoms", (union,)):
+			for ring in [geom.exterior] + list(geom.interiors):
+				coords = list(ring.coords)
+				segments.extend((coords[i - 1], coords[i]) for i in range(1, len(coords)))
+
+		return segments
+
+	def silhouette_raster(self, polyline, position):
+		"""Fallback for a system without shapely. Rasterises the union coarsely and emits every cell
+		edge with the region on one side and not the other, which gives the same unordered pairs and
+		needs no contour tracing. Staircased, and deliberately so: this is roughly the resolution the
+		search itself tests the corridor at."""
+		capsules = corridor_from_polyline(polyline, self.corridor_radius)
+		if position is not None:
+			capsules.append(Capsule(position[0], position[1], position[0], position[1], self.corridor_radius))
+
+		res = max(1.0, 0.1 * self.corridor_radius)
+		xs = [x for c in capsules for x in (c.x1, c.x2)]
+		ys = [y for c in capsules for y in (c.y1, c.y2)]
+		x0 = min(xs) - self.corridor_radius - res
+		y0 = min(ys) - self.corridor_radius - res
+		cols = int(math.ceil((max(xs) + self.corridor_radius + res - x0) / res)) + 1
+		rows = int(math.ceil((max(ys) + self.corridor_radius + res - y0) / res)) + 1
+
+		gx, gy = np.meshgrid(x0 + np.arange(cols) * res, y0 + np.arange(rows) * res)
+
+		inside = np.zeros((rows, cols), dtype=bool)
+		for capsule in capsules:
+			inside |= capsule.contains(gx, gy)
+
+		segments = []
+
+		# A boundary edge is one whose two adjacent sample points disagree, so the two comparisons below
+		# are the whole outline. Vertical edges first, then horizontal.
+		for r, c in zip(*np.nonzero(inside[:, :-1] != inside[:, 1:])):
+			x = x0 + (c + 0.5) * res
+			segments.append(((x, y0 + (r - 0.5) * res), (x, y0 + (r + 0.5) * res)))
+
+		for r, c in zip(*np.nonzero(inside[:-1, :] != inside[1:, :])):
+			y = y0 + (r + 0.5) * res
+			segments.append(((x0 + (c - 0.5) * res, y), (x0 + (c + 0.5) * res, y)))
+
+		return segments
+
+	def corridor_marker(self, segments, stamp):
+		"""The boundary the search is actually held to, so it doubles as a picture of how much space a
+		correction has to work in."""
 		marker = Marker()
 		marker.header.frame_id = self.planning_frame
 		marker.header.stamp = stamp
 		marker.ns = "corridor"
-		marker.id = marker_id
-		marker.type = Marker.LINE_STRIP
+		marker.id = 0
+		marker.type = Marker.LINE_LIST
 		marker.action = Marker.ADD
 		marker.scale.x = 0.2
 		marker.pose.orientation.w = 1.0
 		marker.color.r, marker.color.g, marker.color.b, marker.color.a = 0.2, 0.6, 1.0, 0.7
 
-		dx, dy = b[0] - a[0], b[1] - a[1]
-		length = math.hypot(dx, dy)
-		ux, uy = (dx / length, dy / length) if length > 1e-6 else (1.0, 0.0)
-		nx, ny = -uy, ux
-		r = self.corridor_radius
-		arc = 20
+		for a, b in segments:
+			marker.points.append(Point(a[0], a[1], 0.0))
+			marker.points.append(Point(b[0], b[1], 0.0))
 
-		# Half turn round the far end, then half turn round the near end; the straight flanks fall out
-		# of joining the two arcs
-		points = []
-		for ex, ey, base in ((b[0], b[1], 0.0), (a[0], a[1], math.pi)):
-			for i in range(arc + 1):
-				theta = base + math.pi * i / arc
-				c, s = math.cos(theta), math.sin(theta)
-				points.append(Point(ex + r * (c * nx + s * ux), ey + r * (c * ny + s * uy), 0.0))
-
-		points.append(points[0])
-		marker.points = points
 		return marker
 
 if __name__ == "__main__":
