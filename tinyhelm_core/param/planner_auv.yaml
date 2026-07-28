@@ -21,7 +21,7 @@ tinyhelm_waypoints:
     z_distance_threshold: 0.25
 
     # PID params for heading control.
-    P: 1.0
+    P: 3.0
     I: 0.005
     D: 10.0
  
@@ -42,7 +42,7 @@ tinyhelm_stationkeeping:
     deadzone_fraction: 0.3
  
     # PID params for heading control.
-    P: 1.0
+    P: 3.0
     I: 0.002
     D: 65.0
  

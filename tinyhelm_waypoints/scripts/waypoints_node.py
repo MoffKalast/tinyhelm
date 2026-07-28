@@ -314,7 +314,7 @@ class LineFollowingController:
 			# Full speed ahead
 			vel_multiplier = 1.0
 		elif abs_angle_error <= ANGLE_60_RAD:
-			# Linearly decrease speed from 100% at 30 deg to 0% at 60 deg.
+			# Linearly decrease speed from 100% at 40 deg to 0% at 60 deg.
 			scale = (abs_angle_error - ANGLE_40_RAD) / (ANGLE_60_RAD - ANGLE_40_RAD)
 			vel_multiplier = 1.0 - scale
 		elif abs_angle_error <= ANGLE_120_RAD:
@@ -324,6 +324,9 @@ class LineFollowingController:
 			# Reverse from 0% at 120 deg to -100% at 180 deg for J turn behaviour.
 			scale = (abs_angle_error - ANGLE_120_RAD) / (ANGLE_140_RAD - ANGLE_120_RAD)
 			vel_multiplier = -scale
+		elif abs_angle_error > ANGLE_140_RAD:
+			vel_multiplier = -1.0
+
 
 		linear_vel = self.MAX_LINEAR_SPD * vel_multiplier
 

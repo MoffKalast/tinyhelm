@@ -10,7 +10,7 @@ LETHAL = float("inf")
 # a larger weight buys detours that budget_factor then throws away as unplannable.
 SOFT_WEIGHT = 2.0
 
-DIVERGENCE_WEIGHT = 2.0
+DIVERGENCE_WEIGHT = 1.6
 
 def segment_distance(px, py, ax, ay, bx, by):
 	dx = bx - ax

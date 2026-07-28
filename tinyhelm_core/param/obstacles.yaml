@@ -54,9 +54,12 @@ tinyhelm_obstacles:
     # How often an obstruction is restated while it persists.
     status_period: 1.0
 
-    # Full param path the usable corridor width is read from at runtime, has to point at the active controller. 
+    # Full param path read from at runtime, has to point at the active controller. 
     # This is the clearance a route must keep: the vessel may sit anywhere within its allowed divergence under wind or current, so the corridor has to be clear wherever it ends up.
     divergence_param: /tinyhelm_waypoints/max_line_divergence
+
+    #If a search for a corridor the width of the currently set divergence_param fails entirely, the planner will degrade down to this width as a last resort
+    robot_width: 1.0
 
     # How far off its line the vessel may ever be routed. Flat on purpose: it also bounds the region a  search has to cover. 
     max_lateral_detour: 20.0
