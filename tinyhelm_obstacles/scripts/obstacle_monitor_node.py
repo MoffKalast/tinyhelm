@@ -54,6 +54,11 @@ class ObstacleMonitorNode:
 		self.awaiting_since = rospy.Time(0)
 		self.attempts = 0
 		self.blocked = False
+		# Set once a search has failed against the obstruction we are currently looking at, and only
+		# cleared when the route comes good or a correction goes out. Without it a monitor that retries
+		# once a second would report SLOW on every fresh attempt and HOLD on every failure, and the
+		# helm would dutifully let go and take hold again all the way to the obstacle.
+		self.stuck = False
 		self.last_status = None
 
 		self.tf_buffer = tf2_ros.Buffer()
@@ -120,6 +125,7 @@ class ObstacleMonitorNode:
 		self.abandon_walk()
 		self.state.set_mission([(p.pose.position.x, p.pose.position.y, p.pose.position.z) for p in poses])
 		self.blocked = False
+		self.stuck = False
 
 		if not self.state.active():
 			self.current_path = []
@@ -162,6 +168,7 @@ class ObstacleMonitorNode:
 				rospy.loginfo("obstacle monitor: route clear again")
 				self.abandon_walk()
 			self.blocked = False
+			self.stuck = False
 			self.publish_status(MonitorStatus.OK, "Route clear.")
 			return
 
@@ -170,7 +177,8 @@ class ObstacleMonitorNode:
 			return
 
 		if not self.state.active():
-			self.publish_status(MonitorStatus.WARN, "Route obstructed but no mission to correct against.")
+			# Nothing to correct against and no leg of ours to hold off, but something is obstructed
+			self.publish_status(MonitorStatus.SLOW, "Route obstructed but no mission to correct against.")
 			return
 
 		rospy.logwarn("obstacle monitor: route obstructed on leg %d, %.0fm ahead, clearance %.1fm", msg.blocked_leg, msg.blocked_distance, msg.min_clearance)
@@ -182,6 +190,9 @@ class ObstacleMonitorNode:
 			return
 
 		self.walk = ReplanWalk(self.state, position[0], position[1])
+		# A first attempt against a fresh obstruction is usually answered in a fraction of a second, so
+		# easing off is enough; it escalates only once one of them has come back empty
+		self.publish_status(MonitorStatus.HOLD if self.stuck else MonitorStatus.SLOW, "Route obstructed, planning a correction.")
 		self.send_next()
 
 	def abandon_walk(self):
@@ -239,7 +250,9 @@ class ObstacleMonitorNode:
 		if self.attempts > self.request_retries:
 			rospy.logerr("obstacle monitor: planner did not answer request %d after %d attempts, dropping the correction", self.awaiting, self.attempts)
 			self.abandon_walk()
-			self.publish_status(MonitorStatus.INTERNAL_ERROR, "Planner is not answering.")
+			# Blind rather than merely stuck: with no planner answering, this monitor cannot promise
+			# anything about the water ahead, and it has no way to earn that back on its own
+			self.publish_status(MonitorStatus.ESTOP, "Planner is not answering.")
 			return
 
 		rospy.logwarn("obstacle monitor: request %d timed out, resending", self.awaiting)
@@ -259,7 +272,7 @@ class ObstacleMonitorNode:
 			# fault and burn the timeout budget doing it.
 			rospy.logwarn("obstacle monitor: planner could not answer request %d (%s)", msg.request_id, self.reason_text(msg.result))
 			self.abandon_walk()
-			self.publish_status(MonitorStatus.WARN, "Planner could not answer: %s." % self.reason_text(msg.result))
+			self.report_stuck("Planner could not answer: %s." % self.reason_text(msg.result))
 			return
 
 		reachable = msg.result == PlanReply.OK and len(msg.path) >= 2
@@ -286,14 +299,21 @@ class ObstacleMonitorNode:
 		self.abandon_walk()
 
 		if outcome == WALK_WITHHELD:
-			self.publish_status(MonitorStatus.WARN, "Waypoint %s unreachable (%s), confirming before correcting." % (index, self.reason_text(result)))
+			self.report_stuck("Waypoint %s unreachable (%s), confirming before correcting." % (index, self.reason_text(result)))
 			return
 
 		if outcome == WALK_ABANDONED or walk is None or len(walk.points) < 2:
-			self.publish_status(MonitorStatus.OBSERVED_ERROR, "No usable corrected course through the remaining waypoints.")
+			self.report_stuck("No usable corrected course through the remaining waypoints.")
 			return
 
 		self.publish_revision(walk)
+
+	def report_stuck(self, message):
+		"""We have nothing to offer. Reported as an observation and not as a command: HOLD says the
+		route ahead is obstructed and there is no way round it yet, which is for the helm to act on,
+		and every later attempt against the same obstruction says the same until one of them lands."""
+		self.stuck = True
+		self.publish_status(MonitorStatus.HOLD if self.blocked else MonitorStatus.SLOW, message)
 
 	def publish_revision(self, walk):
 		position = self.robot_position()
@@ -315,6 +335,7 @@ class ObstacleMonitorNode:
 		# solving the same correction over and over.
 		self.current_path = [(x, y) for x, y, _ in points]
 		self.publish_watch()
+		self.stuck = False
 
 		if walk.any_skipped:
 			detail = "; ".join("waypoint %d %s" % (i, why) for i, why in walk.reasons)
