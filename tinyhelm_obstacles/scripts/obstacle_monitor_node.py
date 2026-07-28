@@ -5,27 +5,14 @@ import tf2_ros
 
 from geometry_msgs.msg import Point, PoseStamped
 from nav_msgs.msg import Path
-from shapely.geometry import LineString
-from shapely.geometry import Point as ShapelyPoint
-from shapely.ops import unary_union
-from visualization_msgs.msg import Marker, MarkerArray
 
 from mission_state import WALK_ABANDONED, WALK_RUNNING, WALK_WITHHELD, MissionState, ReplanWalk, drop_passed_legs
 from tinyhelm_core.msg import MonitorStatus
 from tinyhelm_obstacles.msg import PathStatus, PathWatch, PlanReply, PlanRequest
 
+from markers import DebugMarkers
+
 class ObstacleMonitorNode:
-	"""Watches the mission the helm is executing and the route it is currently steering, and when that
-	route is obstructed proposes a corrected one. It commands nothing: it publishes a revised path and
-	a status, and the helm decides what to do with them.
-
-	There is no tick. Everything happens because something arrived: a mission, a route, a report that
-	the route is obstructed, or a reply from the planner. The one timer here is a watchdog on an
-	outstanding request, which exists because a planner that has died or dropped a message is
-	otherwise indistinguishable from one still thinking.
-
-	Nothing in this node touches a grid or runs a search, which is the point: the expensive work sits
-	behind a topic pair and this side stays responsive enough to keep the helm honest."""
 
 	def __init__(self):
 		self.planning_frame = rospy.get_param("/planning_frame", "local")
@@ -38,7 +25,7 @@ class ObstacleMonitorNode:
 
 		self.divergence_param = self.params.get('divergence_param')
 		self.robot_width = self.params.get('robot_width')
-		self.corridor_radius = self.params.get('max_lateral_detour')
+		self.max_detour = self.params.get('max_lateral_detour')
 		self.request_timeout = self.params.get('request_timeout')
 		self.request_retries = self.params.get('request_retries')
 
@@ -51,6 +38,7 @@ class ObstacleMonitorNode:
 		self.awaiting_since = rospy.Time(0)
 		self.attempts = 0
 		self.blocked = False
+
 		# Set once a search has failed against the obstruction we are currently looking at, and only
 		# cleared when the route comes good or a correction goes out. Without it a monitor that retries
 		# once a second would report SLOW on every fresh attempt and HOLD on every failure, and the
@@ -58,13 +46,14 @@ class ObstacleMonitorNode:
 		self.stuck = False
 		self.last_status = None
 
+		self.markers = DebugMarkers(self.planning_frame, self.max_detour)
+
 		self.tf_buffer = tf2_ros.Buffer()
 		self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
 		self.path_pub = rospy.Publisher("/obstacles/_revised_path_out", Path, queue_size=1, latch=True)
 		self.status_pub = rospy.Publisher("/obstacles/_status", MonitorStatus, queue_size=5, latch=True)
 		self.remaining_pub = rospy.Publisher("/obstacles/_remaining", Path, queue_size=1, latch=True)
-		self.markers_pub = rospy.Publisher("/obstacles/_markers", MarkerArray, queue_size=1, latch=True)
 
 		self.request_pub = rospy.Publisher("/obstacles/plan_request", PlanRequest, queue_size=1)
 		self.watch_pub = rospy.Publisher("/obstacles/path_watch", PathWatch, queue_size=1, latch=True)
@@ -77,7 +66,7 @@ class ObstacleMonitorNode:
 		self.watchdog = rospy.Timer(rospy.Duration(self.params.get('planner_timeout')), self.check_timeout)
 
 		self.publish_status(MonitorStatus.OK, "No active mission.")
-		rospy.loginfo("obstacle monitor: corridor radius %.0fm, clearance follows %s", self.corridor_radius, self.divergence_param)
+		rospy.loginfo("obstacle monitor: corridor radius %.0fm, clearance follows %s", self.max_detour, self.divergence_param)
 
 	def clearance(self):
 		"""How far the route must stay from an obstacle. This is the controller's allowed divergence
@@ -86,8 +75,8 @@ class ObstacleMonitorNode:
 		band by giving up half a robot width of it, so the margin is accounted for once and here."""
 		divergence = rospy.get_param(self.divergence_param, None)
 		if divergence is None:
-			rospy.logwarn_throttle(30.0, "obstacle monitor: %s is unset, falling back to the corridor radius" % self.divergence_param)
-			return self.corridor_radius
+			rospy.logwarn_throttle(30.0, "obstacle monitor: %s is unset, falling back to robot_width" % self.robot_width)
+			return self.robot_width
 
 		return divergence
 
@@ -127,7 +116,7 @@ class ObstacleMonitorNode:
 		if not self.state.active():
 			self.current_path = []
 			self.publish_watch()
-			self.publish_markers([], None)
+			self.markers.publish([], None)
 			self.publish_status(MonitorStatus.OK, "No active mission.")
 			return
 
@@ -153,7 +142,7 @@ class ObstacleMonitorNode:
 			rospy.loginfo("obstacle monitor: %d waypoints remaining", len(self.state.remaining()))
 
 		self.publish_remaining()
-		self.publish_markers(self.state.corridor_polyline(), position)
+		self.markers.publish(self.state.corridor_polyline(), position)
 
 	def path_status_callback(self, msg):
 		"""The planner reports on the route rather than the monitor inspecting the map, so this is the
@@ -220,7 +209,7 @@ class ObstacleMonitorNode:
 		# Only the leg being solved, not the whole remaining mission. The search is held to a tube round
 		# this and is steered toward the line itself, and both go wrong on a pattern that doubles back.
 		msg.corridor = [Point(x, y, 0.0) for x, y in self.state.leg_reference(index, start[0], start[1])]
-		msg.corridor_radius = self.corridor_radius
+		msg.corridor_radius = self.max_detour
 		self.request_pub.publish(msg)
 
 	def resend(self):
@@ -297,10 +286,17 @@ class ObstacleMonitorNode:
 		self.abandon_walk()
 
 		if outcome == WALK_WITHHELD:
-			# Not a verdict. The walk is confirming one waypoint over several attempts before giving up
-			# on it and routing to the next, and those attempts are a second apart, so easing off covers
-			# the wait. Calling this a hold stopped the vessel on the strength of a single failed search.
-			self.publish_status(MonitorStatus.SLOW, "Waypoint %s unreachable (%s), confirming before correcting." % (index, self.reason_text(result)))
+			# Withholding says nothing about whether there is anywhere to go. The walk confirms one
+			# waypoint over several attempts and then moves on to the next, so on a long mission it can
+			# withhold its way through every remaining waypoint in turn, for minutes, without ever once
+			# concluding that the correction is hopeless. What decides the pace is whether it has
+			# assembled a course the vessel could actually steer: with a usable prefix there is
+			# somewhere safe to be going, so ease off and keep confirming; with nothing at all there is
+			# no route out of here and the only safe speed is zero.
+			if walk is not None and len(walk.points) >= 2:
+				self.publish_status(MonitorStatus.SLOW, "Waypoint %s unreachable (%s), confirming before correcting." % (index, self.reason_text(result)))
+			else:
+				self.report_stuck("Waypoint %s unreachable (%s), nothing usable to steer yet." % (index, self.reason_text(result)))
 			return
 
 		if outcome == WALK_ABANDONED or walk is None or len(walk.points) < 2:
@@ -386,71 +382,6 @@ class ObstacleMonitorNode:
 		msg.status = status
 		msg.message = message
 		self.status_pub.publish(msg)
-
-	def publish_markers(self, polyline, position):
-
-		def corridor_silhouette(polyline, position):
-			"""Boundary of the union of the leg tubes and the disc at the vessel, as unordered pairs of
-			endpoints. Buffering the polyline produces the same stadium chain the planner builds capsule by
-			capsule, joins included, so the union is one call rather than a stamp per leg.
-
-			Pairs rather than a ring because a LINE_LIST needs no ordering, and so needs no case for either
-			of the two things a pattern that doubles back produces: gaps enclosed between legs, and a piece
-			detached from the rest. The detached case is worth seeing rather than smoothing away, since a
-			vessel whose disc no longer touches the tube has nowhere legal for a correction to begin."""
-			shapes = [LineString(polyline).buffer(self.corridor_radius, resolution=8)]
-			if position is not None:
-				shapes.append(ShapelyPoint(position[0], position[1]).buffer(self.corridor_radius, resolution=8))
-
-			union = unary_union(shapes)
-
-			segments = []
-			for geom in getattr(union, "geoms", (union,)):
-				for ring in [geom.exterior] + list(geom.interiors):
-					coords = list(ring.coords)
-					segments.extend((coords[i - 1], coords[i]) for i in range(1, len(coords)))
-
-			return segments
-
-		def corridor_marker(segments, stamp):
-			"""The boundary the search is actually held to, so it doubles as a picture of how much space a
-			correction has to work in."""
-			marker = Marker()
-			marker.header.frame_id = self.planning_frame
-			marker.header.stamp = stamp
-			marker.ns = "corridor"
-			marker.id = 0
-			marker.type = Marker.LINE_LIST
-			marker.action = Marker.ADD
-			marker.scale.x = 0.2
-			marker.pose.orientation.w = 1.0
-			marker.color.r, marker.color.g, marker.color.b, marker.color.a = 0.2, 0.6, 1.0, 0.7
-
-			for a, b in segments:
-				marker.points.append(Point(a[0], a[1], 0.0))
-				marker.points.append(Point(b[0], b[1], 0.0))
-
-			return marker
-
-		"""One outline for the whole allowed region rather than a stadium per leg. Stacked stadiums are
-		unreadable on a survey pattern, where every leg overlaps its neighbours and the interior fills
-		with the flanks of tubes that are not the boundary of anything."""
-		arr = MarkerArray()
-		stamp = rospy.Time.now()
-
-		# The old drawing published one marker id per leg, and rviz keeps anything it is not told to
-		# forget. Without this a mission with fewer legs than the last one leaves the surplus stadiums
-		# on screen for good, which looks exactly like the pile-up this replaces.
-		clear = Marker()
-		clear.header.frame_id = self.planning_frame
-		clear.header.stamp = stamp
-		clear.action = Marker.DELETEALL
-		arr.markers.append(clear)
-
-		if len(polyline) >= 2:
-			arr.markers.append(corridor_marker(corridor_silhouette(polyline, position), stamp))
-
-		self.markers_pub.publish(arr)
 
 if __name__ == "__main__":
 	rospy.init_node("tinyhelm_obstacles")
