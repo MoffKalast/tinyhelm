@@ -42,10 +42,7 @@ class ObstacleMonitorNode:
 		self.request_timeout = self.params.get('request_timeout')
 		self.request_retries = self.params.get('request_retries')
 
-		self.state = MissionState(
-			self.params.get('waypoint_reached_radius'),
-			self.params.get('unreachable_cycles'),
-		)
+		self.state = MissionState(self.params.get('unreachable_cycles'))
 
 		self.current_path = []
 		self.walk = None
@@ -250,9 +247,10 @@ class ObstacleMonitorNode:
 		if self.attempts > self.request_retries:
 			rospy.logerr("obstacle monitor: planner did not answer request %d after %d attempts, dropping the correction", self.awaiting, self.attempts)
 			self.abandon_walk()
-			# Blind rather than merely stuck: with no planner answering, this monitor cannot promise
-			# anything about the water ahead, and it has no way to earn that back on its own
-			self.publish_status(MonitorStatus.ESTOP, "Planner is not answering.")
+			# Never an ESTOP. That ends the mission and can leave the vessel somewhere it has to be
+			# fetched from, which is a far worse outcome than waiting: the walk is dropped, the next
+			# steady report starts a fresh one, and it keeps asking for as long as it takes.
+			self.report_stuck("Planner is not answering.")
 			return
 
 		rospy.logwarn("obstacle monitor: request %d timed out, resending", self.awaiting)
@@ -299,7 +297,10 @@ class ObstacleMonitorNode:
 		self.abandon_walk()
 
 		if outcome == WALK_WITHHELD:
-			self.report_stuck("Waypoint %s unreachable (%s), confirming before correcting." % (index, self.reason_text(result)))
+			# Not a verdict. The walk is confirming one waypoint over several attempts before giving up
+			# on it and routing to the next, and those attempts are a second apart, so easing off covers
+			# the wait. Calling this a hold stopped the vessel on the strength of a single failed search.
+			self.publish_status(MonitorStatus.SLOW, "Waypoint %s unreachable (%s), confirming before correcting." % (index, self.reason_text(result)))
 			return
 
 		if outcome == WALK_ABANDONED or walk is None or len(walk.points) < 2:
@@ -311,7 +312,11 @@ class ObstacleMonitorNode:
 	def report_stuck(self, message):
 		"""We have nothing to offer. Reported as an observation and not as a command: HOLD says the
 		route ahead is obstructed and there is no way round it yet, which is for the helm to act on,
-		and every later attempt against the same obstruction says the same until one of them lands."""
+		and every later attempt against the same obstruction says the same until one of them lands.
+
+		Deliberately open ended. A hold is held for as long as the water stays shut, because the map is
+		evidence that decays and an obstruction that is total now may not be in a minute; there is no
+		attempt count after which this gives up and escalates."""
 		self.stuck = True
 		self.publish_status(MonitorStatus.HOLD if self.blocked else MonitorStatus.SLOW, message)
 

@@ -15,7 +15,7 @@ class MonitorAction(Enum):
 	NOTHING = 1
 	REVISE_PLAN = 2
 	SLOW_DOWN = 3
-	SUSPEND = 4
+	HOLD_STILL = 4
 	STATIONKEEPING = 5
 
 class Monitors:
@@ -28,13 +28,16 @@ class Monitors:
 		unhappiest and no precedence between them has to be spelled out here. REPLAN sits lowest
 		above OK on purpose: it is a proposal attached to a mission that is otherwise going fine,
 		and it must never outrank a monitor that wants the vessel stopped.
+
+		SLOW and HOLD are the same thing at different settings, half speed and none, and neither
+		cancels anything. Only ESTOP takes the wheel away from what is driving.
 	"""
 
 	ACTIONS = {
 		MonitorStatus.OK: MonitorAction.NOTHING,
 		MonitorStatus.REPLAN: MonitorAction.REVISE_PLAN,
 		MonitorStatus.SLOW: MonitorAction.SLOW_DOWN,
-		MonitorStatus.HOLD: MonitorAction.SUSPEND,
+		MonitorStatus.HOLD: MonitorAction.HOLD_STILL,
 		MonitorStatus.ESTOP: MonitorAction.STATIONKEEPING,
 	}
 

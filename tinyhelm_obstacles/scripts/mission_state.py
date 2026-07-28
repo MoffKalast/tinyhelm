@@ -18,8 +18,7 @@ class MissionState:
 	rebuilt afterwards. Building on demand removes the possibility rather than fixing an instance of
 	it: there is nowhere for a stale tube to live."""
 
-	def __init__(self, waypoint_reached_radius, unreachable_cycles):
-		self.waypoint_reached_radius = waypoint_reached_radius
+	def __init__(self, unreachable_cycles):
 		self.unreachable_cycles = unreachable_cycles
 
 		self.mission = []
@@ -36,28 +35,54 @@ class MissionState:
 	def active(self):
 		return len(self.mission) > 0 and self.next_index < len(self.mission)
 
+	def passed(self, index, rx, ry):
+		"""Whether the vessel has gone by mission[index].
+
+		Measured along the leg that arrives at the waypoint and satisfied once the vessel's projection
+		onto that leg reaches its far end, however far to the side it actually passed. Proximity to the
+		waypoint cannot express that: miss one by more than a radius while detouring round an obstacle
+		and progress stops for good, because every later test is then against a waypoint astern, which
+		forward motion can never satisfy. One missed waypoint used to poison the whole mission.
+
+		Oriented by the incoming leg and never by the outgoing one. A survey pattern doubles back on
+		itself, so at a turn the next waypoint lies back the way we came, and an outgoing orientation
+		would call the turn passed while the vessel was still running up to it."""
+		if index >= len(self.mission):
+			return False
+
+		bx, by, _ = self.mission[index]
+
+		if index > 0:
+			ax, ay, _ = self.mission[index - 1]
+			reach = 1.0
+		elif len(self.mission) > 1:
+			# The first waypoint is where the mission was anchored, at the vessel, so no leg arrives at
+			# it. Being on the outbound side of it is as much as can be asked.
+			ax, ay = bx, by
+			bx, by, _ = self.mission[1]
+			reach = 0.0
+		else:
+			return False
+
+		dx, dy = bx - ax, by - ay
+		length_sq = dx * dx + dy * dy
+		if length_sq < 1e-9:
+			return True
+
+		return ((rx - ax) * dx + (ry - ay) * dy) / length_sq >= reach
+
 	def update_progress(self, rx, ry):
-		"""Returns True when the vessel has passed at least one more waypoint."""
-		moved_on = False
-		while self.next_index < len(self.mission):
-			px, py, _ = self.mission[self.next_index]
-			if math.hypot(px - rx, py - ry) <= self.waypoint_reached_radius:
-				self.next_index += 1
-				moved_on = True
-				continue
+		"""Returns True when the vessel has passed one more waypoint.
 
-			# A waypoint given up as unreachable can never be arrived at, so it counts as passed once
-			# the vessel crosses the perpendicular at it along the outbound leg
-			if self.next_index in self.skipped and self.next_index + 1 < len(self.mission):
-				qx, qy, _ = self.mission[self.next_index + 1]
-				if (rx - px) * (qx - px) + (ry - py) * (qy - py) > 0.0:
-					self.next_index += 1
-					moved_on = True
-					continue
+		One per call, deliberately. A pattern that crosses itself leaves the vessel beyond the
+		perpendicular of waypoints it has no business having reached, and a loop here would run through
+		all of them on the strength of a single coincidence. One at a time means a wrong advance costs
+		one waypoint, and the next call has to earn the one after it."""
+		if not self.passed(self.next_index, rx, ry):
+			return False
 
-			break
-
-		return moved_on
+		self.next_index += 1
+		return True
 
 	def remaining(self):
 		return self.mission[self.next_index:]

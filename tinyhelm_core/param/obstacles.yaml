@@ -67,9 +67,6 @@ tinyhelm_obstacles:
     # Consecutive failed attempts on a waypoint before giving up on it and routing to the next.
     unreachable_cycles: 3
 
-    #TODO
-    waypoint_reached_radius: 6.0
-
     # The longest we wait for the planner to find a solution before resetting it and retrying
     planner_timeout: 2.0
 

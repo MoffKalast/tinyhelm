@@ -98,11 +98,6 @@ class HelmCore:
 
 		self.manual_home = None
 		self.home_pose = None
-
-		# What a monitor demanding a HOLD parked, to be picked up again when it stops demanding it.
-		# The mission itself is left alone while held: the monitors keep watching the route we stopped
-		# on, because their verdict on it is the only thing that can let us go again.
-		self.held_behaviour: Optional[Dict[str, Any]] = None
 		self.speed_scale = 1.0
 
 		self.controllers = self.cfg_loader.parse_controllers(self.controller_status_callback, self.markers_callback, self.current_path_callback)
@@ -160,7 +155,6 @@ class HelmCore:
 				self.set_cmd_vel_mux("")
 				self.stop_controller(self.active_controller)
 				self.active_controller = None
-				self.held_behaviour = None
 				self.publish_mission(Path())
 				self.refresh_speed_scale()
 
@@ -233,30 +227,16 @@ class HelmCore:
 
 	def estop_callback(self, msg: Empty):
 		if self.active_controller == "stationkeeping":
-			if self.held_behaviour is not None:
-				# Holding for a monitor is a pause, an estop is not. Same controller either way, but
-				# what was parked does not get picked up again.
-				rospy.logwarn(f"Estop triggered while holding, {self.held_behaviour['name']} is dropped.")
-				self.held_behaviour = None
-				return
-
 			rospy.logwarn("Estop triggered, but we're already stopped. Send false to /enable to disable helm entirely.")
 			return
 
 		rospy.logwarn("Waypoint ESTOP triggered! Transitioning to stationkeeping.")
 		self.behaviour_callback('stationkeeping', None)
 
-	def behaviour_callback(self, behaviour_name: str, msg: Any, keep_mission: bool = False):
-		"""keep_mission marks a hold the helm has imposed on itself rather than a command that replaces
-		what we were doing, and it is the one thing that separates the two: anything else retires a
-		held mission, because whatever was parked no longer applies."""
+	def behaviour_callback(self, behaviour_name: str, msg: Any):
 		if not self.enabled:
 			rospy.logerr(f"Helm is disabled, ignoring command: {behaviour_name}")
 			return
-
-		if not keep_mission and self.held_behaviour is not None:
-			rospy.loginfo(f"{behaviour_name} supersedes the held {self.held_behaviour['name']}, dropping it.")
-			self.held_behaviour = None
 
 		try:
 			get_plan = getattr(Behaviours, behaviour_name)
@@ -292,7 +272,7 @@ class HelmCore:
 			# next tick, so monitor overlays survive the switch
 			self.drop_markers(f"controller:{self.active_controller}")
 
-		self.set_intention(intention, keep_mission)
+		self.set_intention(intention)
 
 	def wait_for_robot_pose(self) -> Optional[PoseStamped]:
 		"""Waits for TF rather than abandoning the plan. A gap here is almost always a transient
@@ -331,7 +311,7 @@ class HelmCore:
 		anchored.poses = strip_repeated_poses([anchor] + list(plan.poses))
 		return anchored
 
-	def set_intention(self, intention: Intention, keep_mission: bool = False):
+	def set_intention(self, intention: Intention):
 
 		behaviour_name = intention.name
 		controller_name = self.behaviours[behaviour_name]['controller']	
@@ -369,11 +349,7 @@ class HelmCore:
 		self.active_controller = controller_name
 		self.set_cmd_vel_mux(controller_name)
 		self.refresh_speed_scale()
-
-		# A hold leaves the mission relay exactly as it was, so the monitors go on judging the route
-		# the vessel stopped on instead of being told there is nothing to watch
-		if not keep_mission:
-			self.publish_mission(plan)
+		self.publish_mission(plan)
 
 	def hold_reach(self):
 		"""Summed bound on how far an automatic hold target may sit from the vessel. The params
@@ -429,7 +405,7 @@ class HelmCore:
 			m['revision_pending'] = False
 			m['last_revised_path'] = None
 			# Every monitor is about to judge this mission from scratch, so nothing it said about the
-			# last one survives to hold or throttle the new one
+			# last one survives to throttle the new one
 			m['status'] = MonitorStatus.OK
 			if m.get('mission_pub'):
 				m['mission_pub'].publish(msg)
@@ -455,15 +431,15 @@ class HelmCore:
 			self.revise_plan(monitor_name)
 
 	def monitor_status_callback(self, monitor_name: str, msg: MonitorStatus):
-		rospy.loginfo_throttle(5.0, f"Monitor {monitor_name} reports: {MONITOR_STATUS_NAMES.get(msg.status, '???')} - {msg.message}")
+		rospy.loginfo(f"Monitor {monitor_name} reports: {MONITOR_STATUS_NAMES.get(msg.status, '???')} - {msg.message}")
 
 		if not self.enabled or monitor_name not in self.monitors:
 			return
 
 		self.monitors[monitor_name]['status'] = msg.status
 
-		# A revision is offered by one monitor, while whether the vessel may act on it depends on all
-		# of them, so it is taken in hand here and applied by the aggregate below
+		# A revision is offered by one monitor, while how fast the vessel may move depends on all of
+		# them, so the proposal is handled here and the pace below
 		if Monitors.action_for(msg.status) == MonitorAction.REVISE_PLAN:
 			self.revise_plan(monitor_name)
 
@@ -479,57 +455,27 @@ class HelmCore:
 		action = Monitors.action_for(self.monitor_state())
 
 		if action == MonitorAction.STATIONKEEPING:
-			if self.active_controller != "stationkeeping" or self.held_behaviour is not None:
+			if self.active_controller != "stationkeeping":
 				rospy.logwarn("A monitor demands a stop! Transitioning to stationkeeping.")
 				self.behaviour_callback('stationkeeping', None)
 			return
 
-		if action == MonitorAction.SUSPEND:
-			self.suspend()
-		else:
-			self.release()
-
 		self.refresh_speed_scale()
 
-	def suspend(self):
-		"""Park what we are doing and hold station on the spot. Resuming needs nothing but the Intention
-		itself: it is re-anchored at the vessel when it goes back out, and the controller works out
-		which leg to rejoin geometrically, so the helm never has to remember where we were."""
-		if self.held_behaviour is not None:
-			return
-
-		held = self.current_behavior
-		if held is None or not held.get('intention') or held['controller'] == "stationkeeping":
-			# Nothing under way to pause, so a hold asks for what we are already doing. If a mission
-			# starts later while the obstruction is still there, the monitor's next report holds it.
-			return
-
-		rospy.logwarn(f"A monitor sees no way through. Holding station, {held['name']} is parked until it does.")
-		self.held_behaviour = held
-		self.behaviour_callback('stationkeeping', None, keep_mission=True)
-
-	def release(self):
-		if self.held_behaviour is None:
-			return
-
-		held = self.held_behaviour
-		self.held_behaviour = None
-
-		# Grabbed before the mission goes back out, because relaying it clears every monitor's
-		# proposal, and a correction that arrived while we were held is very likely the reason we
-		# are being let go
-		pending = [(name, m['last_revised_path']) for name, m in self.monitors.items() if m.get('last_revised_path') is not None]
-
-		rospy.loginfo(f"Hold lifted, resuming {held['name']}.")
-		self.set_intention(held['intention'])
-
-		for name, revision in pending:
-			self.monitors[name]['last_revised_path'] = revision
-			self.revise_plan(name)
-
 	def refresh_speed_scale(self):
-		slow = Monitors.action_for(self.monitor_state()) == MonitorAction.SLOW_DOWN
-		scale = self.slow_speed_scale if slow else 1.0
+		"""A monitor never stops the vessel, it only sets how fast it may go, and HOLD is that dial at
+		zero. Nothing is stopped, cancelled or re-published: the controller keeps its route and its
+		place in it, the monitors keep watching the route being steered, and lifting a hold is this
+		number going back up. The vessel drifts while held rather than fighting to stay put, which is
+		the price of the mission surviving the wait."""
+		action = Monitors.action_for(self.monitor_state())
+
+		if action == MonitorAction.HOLD_STILL:
+			scale = 0.0
+		elif action == MonitorAction.SLOW_DOWN:
+			scale = self.slow_speed_scale
+		else:
+			scale = 1.0
 
 		# Stationkeeping fights wind and current to stay put, so throttling it would only lose ground,
 		# and there is no forward progress to take out of it in the first place
@@ -571,12 +517,6 @@ class HelmCore:
 	def revise_plan(self, monitor_name: str):
 		revision = self.monitors[monitor_name].get('last_revised_path')
 		if revision is None or len(revision.poses) < 2:
-			self.monitors[monitor_name]['revision_pending'] = True
-			return
-
-		if self.held_behaviour is not None:
-			# Held, so stationkeeping has the wheel and cannot be handed a route. Keep the correction:
-			# it is what the release will steer as soon as the monitors allow it.
 			self.monitors[monitor_name]['revision_pending'] = True
 			return
 
