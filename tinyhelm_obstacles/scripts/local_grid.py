@@ -124,7 +124,7 @@ class LocalGrid:
 		"""Credit with elapsed forgetting already taken off, without touching stored state."""
 		credit = self.credit.reshape(-1)[flat_index]
 		silence = now - self.last_seen.reshape(-1)[flat_index] - self.grace
-		burned = np.floor(np.maximum(0.0, silence) / self.forget).astype(np.int16)
+		burned = np.minimum(np.floor(np.maximum(0.0, silence) / self.forget), self.memory).astype(np.int16)
 		return np.maximum(0, credit - burned)
 
 	def observe(self, xs, ys, now, credit_delta):

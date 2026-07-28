@@ -11,7 +11,7 @@ from nav_msgs.msg import OccupancyGrid
 
 from coarse_heuristic import CoarseHeuristic
 from cost_field import Capsule, CostField, corridor_from_polyline, decode_distance
-from theta_star import GOAL_IN_OBSTACLE, GOAL_OUTSIDE_CORRIDOR, NO_ROUTE, OK, START_TRAPPED, ThetaStar, smooth_path
+from theta_star import GOAL_IN_OBSTACLE, GOAL_OUTSIDE_CORRIDOR, NO_ROUTE, OK, START_TRAPPED, UNREACHABLE_COARSE, ThetaStar, smooth_path
 from tinyhelm_obstacles.msg import PathStatus, PathWatch, PlanReply, PlanRequest
 
 RESULT_CODES = {
@@ -20,6 +20,9 @@ RESULT_CODES = {
 	GOAL_OUTSIDE_CORRIDOR: PlanReply.GOAL_OUTSIDE_CORRIDOR,
 	START_TRAPPED: PlanReply.START_TRAPPED,
 	NO_ROUTE: PlanReply.NO_ROUTE,
+	# Same answer on the wire: the caller can do nothing different about it, and the distinction is
+	# only worth having in the log line, where it names which of the two happened
+	UNREACHABLE_COARSE: PlanReply.NO_ROUTE,
 }
 
 class PlannerNode:

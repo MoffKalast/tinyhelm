@@ -1,7 +1,6 @@
 import math
 import heapq
 import numpy as np
-from scipy import ndimage
 
 from cost_field import SOFT_WEIGHT
 
@@ -22,7 +21,7 @@ class CoarseHeuristic:
 
 	  - a coarse cell counts as blocked only when every fine cell inside it is blocked, so a row of
 	    marina piles stays passable instead of merging into a wall
-	  - inflation is applied in whole coarse cells, rounded down
+	  - clearance is not applied here at all: it is already in the field this is built from
 	  - only geometric length and the cheapest soft penalty in each cell are accumulated
 	  - the octile overshoot is divided back out
 
@@ -55,7 +54,12 @@ class CoarseHeuristic:
 		# is far too blunt for that: a fifty metre leg with a twenty metre tube already touches the
 		# edge of a modest window. What matters is whether the goal's own reachable set does, since a
 		# route can only arrive from outside the window by entering that set through the border.
-		self.trust_unreachable = self.goal_inside and not self.reached_edge()
+		#
+		# The set has to be non-empty to be worth trusting. Dijkstra returns nothing at all when the
+		# goal's own coarse cell is blocked, and an empty set reaches no edge, so without this a layer
+		# that knows nothing would answer unreachable for every cell in the window and every request
+		# against it would die before searching.
+		self.trust_unreachable = self.goal_inside and bool(self.cost_to_goal) and not self.reached_edge()
 
 	def downsample(self, field):
 		occupied = field.dist <= field.inflate
@@ -67,10 +71,13 @@ class CoarseHeuristic:
 		# all() rather than any(): a coarse cell is only impassable when nothing inside it is free
 		blocked = blocks.all(axis=(1, 3))
 
-		rings = int(field.inflate / self.res)
-		if rings > 0:
-			blocked = ndimage.binary_dilation(blocked, iterations=rings)
-
+		# Nothing is dilated here. occupied is already the clearance-inflated lethal set, the same
+		# predicate soft_cost returns LETHAL for, so growing it again by field.inflate would charge the
+		# vessel its clearance twice. At a coarse cell no smaller than the clearance that is a whole
+		# extra ring, which is enough to seal the vessel off from the goal's reachable set while there
+		# is still open water either side of the obstacle at full resolution, and the fine search would
+		# then be told the leg is impossible without ever expanding a node.
+		#
 		# Cheapest soft penalty available anywhere inside each coarse cell. Taking the minimum keeps
 		# the estimate below whatever a fine path through there would really pay, while still telling
 		# the search that threading a narrow gap costs more than open water. Without this the estimate

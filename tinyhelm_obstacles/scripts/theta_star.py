@@ -11,6 +11,11 @@ GOAL_OUTSIDE_CORRIDOR = "goal_outside_corridor"
 START_TRAPPED = "start_trapped"
 NO_ROUTE = "no_route"
 
+# Refused before searching, on the coarse layer's word alone rather than by exhausting the corridor.
+# Reported separately because the two are indistinguishable in a reply otherwise, and the difference
+# is the whole difference between a leg that is really impossible and a heuristic that is lying.
+UNREACHABLE_COARSE = "unreachable_coarse"
+
 def integrated_cost(field, ax, ay, bx, by, step):
 	"""Path cost of one straight segment in world space: length plus the soft proximity cost
 	integrated along it. LETHAL if any sample is lethal. Shares its convention with
@@ -53,8 +58,10 @@ def smooth_path(field, points, step):
 		j = len(points) - 1
 		while j > i + 1:
 			direct = integrated_cost(field, points[i][0], points[i][1], points[j][0], points[j][1], step)
-			if direct < LETHAL and direct <= cumulative[j] - cumulative[i] + 1e-9:
+			stretch = LETHAL if cumulative[i] == LETHAL else cumulative[j] - cumulative[i]
+			if direct < LETHAL and direct <= stretch + 1e-9:
 				break
+			
 			j -= 1
 
 		out.append(points[j])
@@ -209,7 +216,7 @@ class ThetaStar:
 		# resolution too, so the expensive exhaustive confirmation can be skipped entirely
 		start_x, start_y = grid.to_world(start)
 		if heuristic.estimate(start_x, start_y) == LETHAL:
-			self.reason = NO_ROUTE
+			self.reason = UNREACHABLE_COARSE
 			return []
 
 		came_from = self.search(grid, start, goal, heuristic)
