@@ -206,7 +206,8 @@ class LineFollowingController:
 
 		self.SIDE_OFFSET_MULT = self.params.get('side_offset_mult')
 		self.IGNORE_ALTITUDE = self.params.get('ignore_altitude')
-		self.RATE = rospy.Rate(self.params.get('rate'))
+		self.rate_hz = self.params.get('rate')
+		self.RATE = rospy.Rate(self.rate_hz)
 
 		self.markers = DebugMarkers(PLANNING_FRAME, "/waypoints/_markers")
 
@@ -274,7 +275,8 @@ class LineFollowingController:
 
 		self.IGNORE_ALTITUDE = config.ignore_altitude
 
-		self.RATE = rospy.Rate(config.rate)
+		self.rate_hz = config.rate
+		self.RATE = rospy.Rate(self.rate_hz)
 
 		return config
 
@@ -424,6 +426,13 @@ class LineFollowingController:
 		twist.angular.z = angular
 		self.cmd_vel_pub.publish(twist)
 
+	def handle_time_jump(self):
+		rospy.logwarn("Time moved backwards, dropping the mission and resetting.")
+		self.tf2_buffer.clear()
+		self.goal_server.reset(None)
+		self.reset()
+		self.RATE = rospy.Rate(self.rate_hz)
+
 	def shutdown_cleanup(self):
 		self.set_status(ControllerStatus.ERROR, "Waypoint planner shutdown.")
 		self.reset()
@@ -441,6 +450,17 @@ class LineFollowingController:
 ctrl = LineFollowingController()
 rospy.on_shutdown(ctrl.shutdown_cleanup)
 
+last_time = rospy.Time.now()
+
 while not rospy.is_shutdown():
-	ctrl.update()
-	ctrl.RATE.sleep()
+	try:
+		now = rospy.Time.now()
+		if now < last_time:
+			ctrl.handle_time_jump()
+		last_time = now
+
+		ctrl.update()
+		ctrl.RATE.sleep()
+	except rospy.exceptions.ROSTimeMovedBackwardsException:
+		ctrl.handle_time_jump()
+		last_time = rospy.Time.now()

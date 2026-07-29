@@ -58,17 +58,14 @@ tinyhelm_obstacles:
     # This is the clearance a route must keep: the vessel may sit anywhere within its allowed divergence under wind or current, so the corridor has to be clear wherever it ends up.
     divergence_param: /tinyhelm_waypoints/max_line_divergence
 
-    #If a search for a corridor the width of the currently set divergence_param fails entirely, the planner will degrade down to this width as a last resort
+    # Fallback option if divergence_param cannot be loaded
     robot_width: 1.0
 
     # How far off its line the vessel may ever be routed. Flat on purpose: it also bounds the region a  search has to cover. 
     max_lateral_detour: 20.0
 
-    # Consecutive failed attempts on a waypoint before giving up on it and routing to the next.
-    unreachable_cycles: 3
-
-    # The longest we wait for the planner to find a solution before resetting it and retrying
-    planner_timeout: 2.0
+    # Try to reach a waypoint for this amount of time before giving up and going to the next one if there is one, if not, end mission
+    retry_unreachable_waypoint_seconds: 30.0
 
     # A request left unanswered this long is resent, and dropped after this many retries.
     request_timeout: 2.0

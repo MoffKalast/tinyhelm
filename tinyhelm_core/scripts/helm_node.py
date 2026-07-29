@@ -43,17 +43,17 @@ class HelmCore:
 	def __init__(self):
 		rospy.init_node("tinyhelm_core")
 
+		self.ROBOT_FRAME = rospy.get_param("/robot_frame", "base_link")
+		self.PLANNING_FRAME = rospy.get_param("/planning_frame", "local")
+
 		# Load parameters under the namespace "tinyhelm_core"
-		self.params = rospy.get_param("tinyhelm_core", {})
+		self.params = rospy.get_param("/tinyhelm_core", {})
 
 		if not self.params:
 			rospy.logwarn("No parameters found under 'tinyhelm_core'. Did you load the YAML file?")
 			raise SystemExit(1)
 		
 		self.cfg_loader = ConfigLoader(self.params)
-
-		self.ROBOT_FRAME = rospy.get_param("/robot_frame", "base_link")
-		self.PLANNING_FRAME = rospy.get_param("/planning_frame", "local")
 		
 		self.estop_topic = self.params.get("estop_topic", "/tinyhelm/estop")
 		self.enabled_topic = self.params.get("enabled_topic", "/tinyhelm/enabled")

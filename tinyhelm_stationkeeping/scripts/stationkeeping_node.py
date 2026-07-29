@@ -34,7 +34,8 @@ class StationKeepingNode:
 		self.MAX_LINEAR_SPD = self.params.get('max_linear_speed')
 		self.MAX_ANGULAR_SPD = self.params.get('max_turning_speed')
 		self.MAX_DIVEGENCE = self.params.get('max_divergence')
-		self.RATE = self.params.get('rate')
+		self.rate_hz = self.params.get('rate')
+		self.RATE = rospy.Rate(self.rate_hz)
 
 		self.DEADZONE_FRACT = self.params.get('deadzone_fraction')
 		self.enabled = False
@@ -74,7 +75,8 @@ class StationKeepingNode:
 		self.MAX_LINEAR_SPD = config.max_linear_speed
 		self.MAX_ANGULAR_SPD = config.max_turning_speed
 		self.MAX_DIVEGENCE = config.max_divergence
-		self.RATE = rospy.Rate(config.rate)
+		self.rate_hz = config.rate
+		self.RATE = rospy.Rate(self.rate_hz)
 		self.DEADZONE_FRACT = config.deadzone_fraction
 		self.deadzone = self.DEADZONE_FRACT * self.MAX_DIVEGENCE
 
@@ -203,14 +205,31 @@ class StationKeepingNode:
 
 		self.send_twist(linear_vel, angular_vel)
 
+	def handle_time_jump(self):
+		rospy.logwarn("Time moved backwards, disabling and resetting.")
+		self.tf2_buffer.clear()
+		self.pid.reset()
+		self.enabled_callback(Bool(False))
+		self.RATE = rospy.Rate(self.rate_hz)
+
 	def run(self):
+		last_time = rospy.Time.now()
+
 		while not rospy.is_shutdown():
 			try:
+				now = rospy.Time.now()
+				if now < last_time:
+					self.handle_time_jump()
+				last_time = now
+
 				self.update()
+				self.RATE.sleep()
+			except rospy.exceptions.ROSTimeMovedBackwardsException:
+				self.handle_time_jump()
+				last_time = rospy.Time.now()
 			except Exception as e:
 				rospy.logwarn(str(e))
 				self.set_status(ControllerStatus.ERROR, str(e))
-			self.RATE.sleep()
 
 	def send_twist(self, linear, angular):
 		if math.isnan(linear):
