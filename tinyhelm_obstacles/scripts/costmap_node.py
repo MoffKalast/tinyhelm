@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 import threading
 
-import numpy as np
 import rospy
 import tf2_ros
 
 from nav_msgs.msg import OccupancyGrid
-from sensor_msgs import point_cloud2
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Empty
-from tf2_sensor_msgs.tf2_sensor_msgs import do_transform_cloud
 
+from cloud import cloud_xy
 from cost_field import encode_cost
 from local_grid import LocalGrid
 
@@ -81,20 +79,16 @@ class CostmapNode:
 		return None
 
 	def cloud_to_xy(self, msg):
-		if msg.header.frame_id != self.planning_frame:
-			try:
-				tf = self.tf_buffer.lookup_transform(self.planning_frame, msg.header.frame_id, msg.header.stamp, rospy.Duration(0.1))
-				msg = do_transform_cloud(msg, tf)
-			except tf2_ros.TransformException as e:
-				rospy.logwarn_throttle(5.0, "costmap: cloud transform failed: %s" % e)
-				return None
+		if msg.header.frame_id == self.planning_frame:
+			return cloud_xy(msg)
 
-		points = list(point_cloud2.read_points(msg, field_names=("x", "y"), skip_nans=True))
-		if not points:
+		try:
+			tf = self.tf_buffer.lookup_transform(self.planning_frame, msg.header.frame_id, msg.header.stamp, rospy.Duration(0.1))
+		except tf2_ros.TransformException as e:
+			rospy.logwarn_throttle(5.0, "costmap: cloud transform failed: %s" % e)
 			return None
 
-		flat = np.asarray(points, dtype=np.float64)
-		return flat[:, 0], flat[:, 1]
+		return cloud_xy(msg, tf.transform)
 
 	def ingest(self, msg, observe):
 		xy = self.cloud_to_xy(msg)

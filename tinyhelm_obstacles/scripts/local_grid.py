@@ -52,6 +52,16 @@ class LocalGrid:
 		self.dist = np.full((self.size, self.size), self.soft, dtype=np.float32)
 		self.pending = None
 
+		# Scratch for settle, which runs on every maintenance tick over the whole window and is the
+		# only thing here that would otherwise allocate several grids a tick. Not reentrant, which
+		# costs nothing: every caller already holds the map lock.
+		self.elapsed = np.empty((self.size, self.size), dtype=np.float64)
+		self.burned = np.empty((self.size, self.size), dtype=np.int16)
+		self.active = np.empty((self.size, self.size), dtype=bool)
+		self.remembered = np.empty((self.size, self.size), dtype=bool)
+		self.active_rows = np.empty(self.size, dtype=bool)
+		self.active_cols = np.empty(self.size, dtype=bool)
+
 	def extent(self):
 		return self.size * self.res
 
@@ -169,31 +179,74 @@ class LocalGrid:
 		if index.size == 0:
 			return None
 
-		occupied = self.occupied()
-		neighbourhood = ndimage.binary_dilation(occupied, structure=ndimage.generate_binary_structure(2, 1))
-		keep = index[neighbourhood.reshape(-1)[index]]
+		keep = index[self.beside_occupied(index)]
 		if keep.size == 0:
 			return None
 
 		rows, cols = np.divmod(keep, self.size)
 		return self.observe(self.origin_x + (cols + 0.5) * self.res, self.origin_y + (rows + 0.5) * self.res, now, 1)
 
+	def beside_occupied(self, index):
+		"""Whether each given cell is itself occupied or touches an occupied cell edgewise. The same
+		predicate a four connected dilation of the whole window answers, evaluated only where it is
+		asked about. Neighbours off the edge of the window read as free, matching the zero border the
+		dilation used; the clamping only keeps those reads in bounds and the mask discards them."""
+		credit = self.credit.reshape(-1)
+		rows, cols = np.divmod(index, self.size)
+		last = self.size * self.size - 1
+
+		near = credit[index] >= self.confirm
+		near |= (cols > 0) & (credit[np.maximum(index - 1, 0)] >= self.confirm)
+		near |= (cols < self.size - 1) & (credit[np.minimum(index + 1, last)] >= self.confirm)
+		near |= (rows > 0) & (credit[np.maximum(index - self.size, 0)] >= self.confirm)
+		near |= (rows < self.size - 1) & (credit[np.minimum(index + self.size, last)] >= self.confirm)
+
+		return near
+
 	def settle(self, now):
 		"""Materialises elapsed forgetting into stored credit. Returns the touched region, or None if
 		nothing changed. Carrying the burned time onto last_seen rather than resetting it is what
 		keeps this free of drift however often it is called."""
-		silence = now - self.last_seen - self.grace
-		steps = np.floor(np.maximum(0.0, silence) / self.forget)
+		steps = self.elapsed
+		np.subtract(now, self.last_seen, out=steps)
+		np.subtract(steps, self.grace, out=steps)
+		np.maximum(steps, 0.0, out=steps)
+		np.divide(steps, self.forget, out=steps)
+		np.floor(steps, out=steps)
 
-		active = (steps > 0) & (self.credit > 0)
-		if not active.any():
+		np.greater(steps, 0.0, out=self.active)
+		np.greater(self.credit, 0, out=self.remembered)
+		np.logical_and(self.active, self.remembered, out=self.active)
+
+		region = self.active_region()
+		if region is None:
 			return None
 
-		self.credit[active] = np.maximum(0, self.credit[active] - steps[active].astype(np.int16))
-		self.last_seen[active] += steps[active] * self.forget
+		# Masked so a cell blanked at the trailing edge, whose silence is nine orders of magnitude
+		# larger than anything real, is never cast at all: unmasked it would overflow int16 and
+		# resurrect the cell it had just cleared.
+		np.copyto(self.burned, steps, where=self.active, casting="unsafe")
+		np.subtract(self.credit, self.burned, out=self.credit, where=self.active)
+		np.maximum(self.credit, 0, out=self.credit, where=self.active)
 
-		rows, cols = np.nonzero(active)
-		return int(cols.min()), int(rows.min()), int(cols.max()), int(rows.max())
+		np.multiply(steps, self.forget, out=steps)
+		np.add(self.last_seen, steps, out=self.last_seen, where=self.active)
+
+		return region
+
+	def active_region(self):
+		np.any(self.active, axis=1, out=self.active_rows)
+		if not self.active_rows.any():
+			return None
+
+		np.any(self.active, axis=0, out=self.active_cols)
+
+		row0 = int(np.argmax(self.active_rows))
+		row1 = self.size - 1 - int(np.argmax(self.active_rows[::-1]))
+		col0 = int(np.argmax(self.active_cols))
+		col1 = self.size - 1 - int(np.argmax(self.active_cols[::-1]))
+
+		return col0, row0, col1, row1
 
 	def occupied(self):
 		return self.credit >= self.confirm
