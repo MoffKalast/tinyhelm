@@ -125,6 +125,14 @@ class PlannerNode:
 		with self.lock:
 			route = list(self.watched)
 			clearance = self.watch_clearance
+			if self.dist is not None:
+				# Store local references to avoid lock overhead in loop
+				dist_grid = self.dist
+				grid_rows, grid_cols = dist_grid.shape
+				origin_x, origin_y = self.origin
+				res = self.res
+			else:
+				dist_grid = None
 
 		if len(route) < 2:
 			return
@@ -137,32 +145,70 @@ class PlannerNode:
 		if field is None:
 			return
 
-		step = 0.5 * self.res
+		step = 0.5 * res
 		travelled = 0.0
 		worst = float("inf")
 		blocked_leg = -1
 		blocked_at = 0.0
 
+		# Pre-calculate clearance padding in grid cells for the bounding box check
+		pad_cells = int(clearance / res) + 1 if res > 0 else 0
+
 		for leg in range(1, len(route)):
 			ax, ay = route[leg - 1]
 			bx, by = route[leg]
 			length = ((bx - ax) ** 2 + (by - ay) ** 2) ** 0.5
-			samples = max(1, int(length / step))
-			for s in range(samples + 1):
-				t = s / samples
-				# Unseen space reads as infinitely clear, which is what keeps the window edge from
-				# looking like a wall, but reporting that as a clearance figure is meaningless. Capped
-				# at the soft radius so the number always means something; the threshold below is
-				# unaffected as long as the soft radius is the larger of the two.
-				gap = min(field.obstacle_distance_at(ax + t * (bx - ax), ay + t * (by - ay)), self.soft_radius)
-				worst = min(worst, gap)
-				if blocked_leg < 0 and gap < clearance:
-					blocked_leg = leg
-					blocked_at = travelled + t * length
+			
+			# Broad-Phase Bounding Box Check 
+			needs_detailed_sampling = True
+			
+			if dist_grid is not None:
+				# Find bounding box in world coordinates
+				min_x, max_x = min(ax, bx), max(ax, bx)
+				min_y, max_y = min(ay, by), max(ay, by)
+				
+				# Convert to grid coordinates with clearance padding
+				min_col = int((min_x - origin_x) / res) - pad_cells
+				max_col = int((max_x - origin_x) / res) + pad_cells + 1
+				min_row = int((min_y - origin_y) / res) - pad_cells
+				max_row = int((max_y - origin_y) / res) + pad_cells + 1
+				
+				# A) Outside costmap check: if the padded box is completely outside the grid,
+				# we can skip detailed sampling because unseen space is clear.
+				if max_col < 0 or min_col >= grid_cols or max_row < 0 or min_row >= grid_rows:
+					# Entirely outside the known costmap: unseen space reads as infinitely clear,
+					# capped at the soft radius so the reported worst clearance still means something.
+					needs_detailed_sampling = False
+					worst = min(worst, self.soft_radius)
+				else:
+					# B) Clear costmap check: clamp to grid bounds and check the subarray
+					min_col_c = max(0, min_col)
+					max_col_c = min(grid_cols, max_col)
+					min_row_c = max(0, min_row)
+					max_row_c = min(grid_rows, max_row)
+					
+					sub_grid = dist_grid[min_row_c:max_row_c, min_col_c:max_col_c]
+					
+					# If the minimum distance in this bounding box is strictly greater than clearance, the entire line segment is guaranteed safe. The box minimum is still a valid bound on the worst clearance actually seen along the segment.
+					if sub_grid.size > 0 and np.min(sub_grid) >= clearance:
+						needs_detailed_sampling = False
+						worst = min(worst, np.min(sub_grid), self.soft_radius)
 
+			# Narrow-Phase Point-by-Point Check
+			if needs_detailed_sampling:
+				samples = max(1, int(length / step))
+				for s in range(samples + 1):
+					t = s / samples
+					gap = min(field.obstacle_distance_at(ax + t * (bx - ax), ay + t * (by - ay)), self.soft_radius)
+					worst = min(worst, gap)
+					if blocked_leg < 0 and gap < clearance:
+						blocked_leg = leg
+						blocked_at = travelled + t * length
+			
 			travelled += length
 
 		self.report(blocked_leg >= 0, blocked_leg, blocked_at, worst)
+	
 
 	def report(self, blocked, leg, distance, clearance):
 		# Reported on every change and otherwise at status_period, clear or not. The steady report is

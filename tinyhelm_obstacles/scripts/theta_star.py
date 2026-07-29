@@ -20,6 +20,16 @@ def integrated_cost(field, ax, ay, bx, by, step):
 	"""Path cost of one straight segment in world space: length plus the soft proximity cost
 	integrated along it. LETHAL if any sample is lethal. Shares its convention with
 	SearchGrid.segment_cost so smoothing compares like with like against the search."""
+	min_x, max_x = min(ax, bx), max(ax, bx)
+	min_y, max_y = min(ay, by), max(ay, by)
+	field_max_x = field.origin_x + field.size * field.res
+	field_max_y = field.origin_y + field.size * field.res
+
+	# Outside the loaded window there is nothing to sample against; the field is free out there by
+	# convention (only a local map is ever loaded), so the segment costs exactly its length.
+	if max_x < field.origin_x or min_x > field_max_x or max_y < field.origin_y or min_y > field_max_y:
+		return math.hypot(bx - ax, by - ay)
+
 	length = math.hypot(bx - ax, by - ay)
 	samples = max(1, int(length / step))
 
