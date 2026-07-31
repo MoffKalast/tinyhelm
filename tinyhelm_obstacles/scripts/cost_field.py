@@ -248,6 +248,108 @@ class CostField:
 		cell = self.world_to_cell(x, y)
 		return self.dist[cell[1], cell[0]] if cell else LETHAL
 
+	def distance_gradient(self, x, y):
+		"""Unit vector up the distance field, or None where the field is flat.
+
+		Flat means the true interior of an obstacle: every sample reads zero, there is no nearest edge
+		encoded and so nothing to point at. In the inflated band around one, which is where a blocked
+		waypoint usually sits, the field is live and this is the normal off the obstacle, the shortest
+		way back into legal water. Also None next to the window edge, where a sample would read
+		infinitely clear and swamp the difference."""
+		east = self.obstacle_distance_at(x + self.res, y)
+		west = self.obstacle_distance_at(x - self.res, y)
+		north = self.obstacle_distance_at(x, y + self.res)
+		south = self.obstacle_distance_at(x, y - self.res)
+		if LETHAL in (east, west, north, south):
+			return None
+
+		dx = east - west
+		dy = north - south
+		length = math.hypot(dx, dy)
+		if length <= 0.0:
+			return None
+
+		return float(dx / length), float(dy / length)
+
+def nudge_direction(field, gx, gy, toward_x, toward_y):
+	"""Which way to move a blocked waypoint.
+
+	Toward the vessel by default: that water is where we already are, so it is both close and known to
+	be clear, and it puts the waypoint on the near side of whatever blocked it rather than beyond it.
+	The distance field's gradient is a better answer where it exists, since it is the normal off the
+	obstacle and therefore the shortest way out, but only when it leads the same way as the vessel: out
+	the far side is just as legal and no use to us."""
+	vx = toward_x - gx
+	vy = toward_y - gy
+	length = math.hypot(vx, vy)
+	if length <= 0.0:
+		return 1.0, 0.0
+
+	vx /= length
+	vy /= length
+
+	gradient = field.distance_gradient(gx, gy)
+	if gradient is None or gradient[0] * vx + gradient[1] * vy <= 0.0:
+		return vx, vy
+
+	return gradient
+
+def nudge_nearest(field, gx, gy, toward_x, toward_y, max_distance):
+	"""Nearest legal point when the chosen direction is walled off the whole way out. Rings outward a
+	cell at a time and takes whichever candidate on the first ring to offer one lies closest to the
+	vessel, so the waypoint still lands on the near side."""
+	cell = field.world_to_cell(gx, gy)
+	if cell is None:
+		return None
+
+	best = None
+	best_distance = 0.0
+	for radius in range(1, int(max_distance / field.res) + 1):
+		for ox in range(-radius, radius + 1):
+			for oy in range(-radius, radius + 1):
+				if max(abs(ox), abs(oy)) != radius:
+					continue
+
+				x, y = field.cell_to_world(cell[0] + ox, cell[1] + oy)
+				if math.hypot(x - gx, y - gy) > max_distance or field.cost_at(x, y) == LETHAL:
+					continue
+
+				distance = math.hypot(x - toward_x, y - toward_y)
+				if best is None or distance < best_distance:
+					best = (x, y)
+					best_distance = distance
+
+		if best is not None:
+			return best
+
+	return None
+
+def nudge_goal(field, gx, gy, toward_x, toward_y, max_distance):
+	"""Moves a waypoint that no search could legally end on to the closest place one can, or None when
+	it is already legal or nothing within max_distance is.
+
+	A waypoint inside an obstacle used to fail the whole leg, and the caller could then only wait for
+	the evidence under it to decay. Moving it is the honest answer instead: the mission wanted the
+	vessel at that spot and the nearest water to it is the closest we can come to obeying that.
+
+	Bounded because a waypoint that has to travel far is no longer the waypoint that was asked for. The
+	caller sets the bound from the corridor it allowed, so the result is always inside the corridor and
+	the leg after it still begins inside its own; legality against obstacles, clearance and the corridor
+	alike all come from the same field query the search itself uses."""
+	if field.cost_at(gx, gy) != LETHAL:
+		return None
+
+	direction = nudge_direction(field, gx, gy, toward_x, toward_y)
+	step = 0.5 * field.res
+
+	for i in range(1, int(max_distance / step) + 1):
+		x = gx + direction[0] * i * step
+		y = gy + direction[1] * i * step
+		if field.cost_at(x, y) != LETHAL:
+			return x, y
+
+	return nudge_nearest(field, gx, gy, toward_x, toward_y, max_distance)
+
 # Published as a spec nav_msgs/OccupancyGrid so it renders in rviz as an ordinary costmap and needs
 # no message of its own. The costmap_2d convention: 100 is definitely occupied, 0 is free. Unknown
 # (-1) is never emitted, because unseen space is deliberately treated as clear.

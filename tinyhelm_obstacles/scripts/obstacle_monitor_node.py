@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import math
+
 import rospy
 import tf2_ros
 
@@ -13,6 +15,10 @@ from utils import PendingRequest, make_path, path_to_planning_frame, poses_to_xy
 # How far a route point may sit from where counting back says it should before we call it a desync.
 # Progress does not depend on this; it only has to absorb float round trips through messages.
 ROUTE_MATCH = 0.01
+
+# How close a solved leg has to end to the waypoint it was aimed at to count as having reached it. The
+# planner ends exactly on the goal it was given, so anything further out is a waypoint it had to move.
+REACHED_WAYPOINT = 0.01
 
 NO_MISSION = "no_mission"
 CLEAR = "clear"
@@ -51,13 +57,21 @@ class Correction:
 			self.points.append((x, y, z))
 			self.origins.append(None)
 
-		# Ends the leg on the waypoint itself rather than the nearest cell centre, so quantisation
-		# cannot drift the route off the survey line
-		if self.points:
-			self.points[-1] = self.mission[index]
-			self.origins[-1] = index
+		if not self.points:
+			self.cursor += 1
+			return
 
-		self.from_x, self.from_y = self.mission[index][0], self.mission[index][1]
+		# Snapping the end onto the waypoint keeps quantisation from drifting the route off the survey
+		# line, but only where the planner reached the waypoint at all. A goal it had to move out of an
+		# obstacle comes back as a different point on purpose, and putting it back would steer the leg
+		# into the very thing the move was escaping.
+		if math.hypot(self.points[-1][0] - self.mission[index][0], self.points[-1][1] - self.mission[index][1]) <= REACHED_WAYPOINT:
+			self.points[-1] = self.mission[index]
+
+		# Still that waypoint as far as progress is concerned, wherever it ended up
+		self.origins[-1] = index
+
+		self.from_x, self.from_y = self.points[-1][0], self.points[-1][1]
 		self.cursor += 1
 
 	def entries(self):

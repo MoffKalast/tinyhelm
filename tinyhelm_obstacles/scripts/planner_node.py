@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import math
 import threading
 import time
 import traceback
@@ -10,7 +11,7 @@ from geometry_msgs.msg import Point
 from nav_msgs.msg import OccupancyGrid
 
 from coarse_heuristic import CoarseHeuristic
-from cost_field import Capsule, CostField, corridor_from_polyline, decode_distance
+from cost_field import Capsule, CostField, corridor_from_polyline, decode_distance, nudge_goal
 from theta_star import GOAL_IN_OBSTACLE, GOAL_OUTSIDE_CORRIDOR, NO_ROUTE, OK, START_TRAPPED, UNREACHABLE_COARSE, ThetaStar, smooth_path
 from tinyhelm_obstacles.msg import PathStatus, PathWatch, PlanReply, PlanRequest
 
@@ -264,8 +265,18 @@ class PlannerNode:
 			return
 
 		started = time.time()
-		heuristic = CoarseHeuristic(field, msg.goal.x, msg.goal.y, factor=self.coarse_factor)
-		raw = self.search.plan(field, msg.start.x, msg.start.y, msg.goal.x, msg.goal.y, msg.corridor_radius, heuristic=heuristic)
+
+		# Before the heuristic rather than inside the search, so the coarse layer is built against the
+		# goal actually being aimed at. Half the corridor keeps the moved waypoint inside the tube it
+		# was allowed, and the reply carries it as the last pose of the path.
+		goal_x, goal_y = msg.goal.x, msg.goal.y
+		nudged = nudge_goal(field, goal_x, goal_y, msg.start.x, msg.start.y, 0.5 * msg.corridor_radius)
+		if nudged:
+			rospy.loginfo("planner: request %d goal was blocked, moved %.1fm to clear water", msg.request_id, math.hypot(nudged[0] - goal_x, nudged[1] - goal_y))
+			goal_x, goal_y = nudged
+
+		heuristic = CoarseHeuristic(field, goal_x, goal_y, factor=self.coarse_factor)
+		raw = self.search.plan(field, msg.start.x, msg.start.y, goal_x, goal_y, msg.corridor_radius, heuristic=heuristic)
 		path = smooth_path(field, raw, 2.0 * field.res) if raw else []
 		elapsed = time.time() - started
 
@@ -291,4 +302,3 @@ if __name__ == "__main__":
 	rospy.init_node("tinyhelm_planner")
 	PlannerNode()
 	rospy.spin()
-
