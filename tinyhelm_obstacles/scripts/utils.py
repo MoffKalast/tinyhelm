@@ -60,23 +60,33 @@ def segment_distance(px, py, ax, ay, bx, by):
 	t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / len2)) if len2 > 0.0 else 0.0
 	return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
 
-def match_index(mission, plan, tolerance):
-	"""Index of the first mission waypoint the controller still has ahead of it, or None when the
-	plan carries none of them.
+def tail_cursor(route, plan, tolerance):
+	"""Index into route of the point the controller is heading to, or None when the plan cannot be a
+	tail of that route.
 
-	plan[0] is the anchor of the leg in progress and is therefore already behind us, so it is
-	excluded. Corrections end exactly on mission waypoints, which is what makes this work; their
-	detour points match nothing and are ignored."""
-	if len(plan) < 2 or not mission:
+	The controller publishes the anchor of the leg in progress followed by everything it still has to
+	visit, so what remains is always a tail of the route it was handed and its length alone says where
+	we are. Position cannot say: a loitering mission runs the same coordinates twice by construction,
+	and a position on one is a position on both.
+
+	Counting from the end also survives the helm trimming stale legs off the front of a revision
+	before relaying it, since a tail of a tail is still a tail of the same route.
+
+	plan[0] is the leg anchor and is already behind us, so only the length after it counts. The
+	coordinate check is a desync alarm rather than the mechanism: nothing is inferred from it, and a
+	miss is reported instead of guessed around."""
+	if len(route) < 1:
 		return None
 
-	ahead = plan[1:]
-	for index, (mx, my, _) in enumerate(mission):
-		for px, py in ahead:
-			if math.hypot(px - mx, py - my) <= tolerance:
-				return index
+	remaining = len(plan) - 1
+	if remaining < 1 or remaining > len(route):
+		return None
 
-	return None
+	cursor = len(route) - remaining
+	if math.hypot(route[cursor][0] - plan[1][0], route[cursor][1] - plan[1][1]) > tolerance:
+		return None
+
+	return cursor
 
 class PendingRequest:
 	"""Bookkeeping for one outstanding planner request. Holds no publisher and calls nothing back:
