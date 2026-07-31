@@ -20,6 +20,11 @@ ROUTE_MATCH = 0.01
 # planner ends exactly on the goal it was given, so anything further out is a waypoint it had to move.
 REACHED_WAYPOINT = 0.01
 
+# How far a fresh correction has to differ from the one already being followed to be worth handing over.
+# Republishing restarts the controller on its route, so a correction that only jitters by less than this
+# costs more in restarts than the new geometry is worth.
+SAME_CORRECTION = 0.5
+
 NO_MISSION = "no_mission"
 CLEAR = "clear"
 CORRECTING = "correcting"
@@ -114,6 +119,7 @@ class ObstacleMonitorNode:
 		self.plan = []
 		self.route = []
 		self.pending_route = None
+		self.published = []
 		self.watched = []
 		self.next_index = 0
 		self.state = NO_MISSION
@@ -190,6 +196,7 @@ class ObstacleMonitorNode:
 		# The helm hands the controller this same path, so it is already the route in force rather
 		# than one waiting to be confirmed
 		self.adopt_route([(x, y, z, index) for index, (x, y, z) in enumerate(self.mission)])
+		self.published = []
 
 		if not self.mission:
 			self.go_idle()
@@ -445,7 +452,22 @@ class ObstacleMonitorNode:
 		self.state = STUCK
 		self.publish_status(MonitorStatus.HOLD, message)
 
+	def same_as_published(self, points):
+		if len(points) != len(self.published):
+			return False
+
+		return all(math.hypot(a[0] - b[0], a[1] - b[1]) <= SAME_CORRECTION for a, b in zip(points, self.published))
+
 	def publish_revision(self, walk):
+		# Handing over a route the controller is already following makes it pick its place on it again
+		# and start the leg afresh, so an unchanged answer is worth nothing and costs the way on
+		if self.same_as_published(walk.points):
+			rospy.loginfo_throttle(5.0, "obstacle monitor: correction unchanged, leaving the route in force")
+			self.state = CORRECTING
+			self.publish_status(MonitorStatus.OK, "Correction already in force.")
+			return
+
+		self.published = list(walk.points)
 		self.path_pub.publish(make_path(self.planning_frame, walk.points))
 
 		# Held rather than adopted: progress still reads against the route in force until the

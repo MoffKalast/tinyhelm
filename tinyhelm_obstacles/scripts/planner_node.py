@@ -11,9 +11,15 @@ from geometry_msgs.msg import Point
 from nav_msgs.msg import OccupancyGrid
 
 from coarse_heuristic import CoarseHeuristic
-from cost_field import Capsule, CostField, corridor_from_polyline, decode_distance, nudge_goal
+from cost_field import Capsule, CostField, corridor_from_polyline, decode_distance, distance_quantum, nudge_goal
 from theta_star import GOAL_IN_OBSTACLE, GOAL_OUTSIDE_CORRIDOR, NO_ROUTE, OK, START_TRAPPED, UNREACHABLE_COARSE, ThetaStar, smooth_path
 from tinyhelm_obstacles.msg import PathStatus, PathWatch, PlanReply, PlanRequest
+
+# How finely a route is sampled against the field, in cells. Shared by the smoother and by the review
+# of the watched route on purpose. The two used to choose their own steps, and a smoother coarser than
+# the review would publish shortcuts the review then called obstructed: the correction was replanned to
+# the same geometry on every costmap, and the controller restarted on each one.
+ROUTE_SAMPLE_CELLS = 0.5
 
 RESULT_CODES = {
 	OK: PlanReply.OK,
@@ -146,7 +152,12 @@ class PlannerNode:
 		if field is None:
 			return
 
-		step = 0.5 * res
+		step = ROUTE_SAMPLE_CELLS * res
+
+		# A gap this far under the clearance is the encoding's own step rather than anything in the
+		# water, and reporting it would obstruct a route that was planned to sit exactly on the boundary
+		tolerance = distance_quantum(clearance, 0.0, self.soft_radius)
+
 		travelled = 0.0
 		worst = float("inf")
 		blocked_leg = -1
@@ -202,7 +213,7 @@ class PlannerNode:
 					t = s / samples
 					gap = min(field.obstacle_distance_at(ax + t * (bx - ax), ay + t * (by - ay)), self.soft_radius)
 					worst = min(worst, gap)
-					if blocked_leg < 0 and gap < clearance:
+					if blocked_leg < 0 and gap < clearance - tolerance:
 						blocked_leg = leg
 						blocked_at = travelled + t * length
 			
@@ -277,7 +288,7 @@ class PlannerNode:
 
 		heuristic = CoarseHeuristic(field, goal_x, goal_y, factor=self.coarse_factor)
 		raw = self.search.plan(field, msg.start.x, msg.start.y, goal_x, goal_y, msg.corridor_radius, heuristic=heuristic)
-		path = smooth_path(field, raw, 2.0 * field.res) if raw else []
+		path = smooth_path(field, raw, ROUTE_SAMPLE_CELLS * field.res) if raw else []
 		elapsed = time.time() - started
 
 		code = RESULT_CODES.get(self.search.reason, PlanReply.NO_ROUTE)

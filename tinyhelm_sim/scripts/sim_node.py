@@ -50,8 +50,8 @@ class VesselSimNode:
 
         # Waves
         wave_cfg = {
-            'wave_height': rospy.get_param("~wave_height", 2.0),
-            'wave_scale': rospy.get_param("~wave_scale", 0.1),
+            'wave_height': rospy.get_param("~wave_height", 1.0),
+            'wave_scale': rospy.get_param("~wave_scale", 0.05),
             'time_scale': rospy.get_param("~wave_time_scale", 0.5),
             'octaves': rospy.get_param("~octaves", 4),
             'persistence': rospy.get_param("~persistence", 0.3),

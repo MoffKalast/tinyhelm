@@ -364,6 +364,21 @@ def encode_cost(dist, inflate_radius, soft_radius):
 	graded = np.rint(shortfall * shortfall * (COST_LETHAL - 1))
 	return np.where(dist <= inflate_radius, COST_LETHAL, graded).astype(np.int8)
 
+def distance_quantum(distance, inflate_radius, soft_radius):
+	"""Width of one representable step of the decoded field at the given distance.
+
+	The encoding is quadratic, so steps are finest close in, where the cost matters, and coarsest out
+	near soft_radius. Anything comparing a decoded distance against a threshold has to allow for it: a
+	route planned to sit right on a clearance boundary can read a quantum under it, and calling that an
+	obstruction reports a property of the encoding as though it were something in the water."""
+	soft = max(soft_radius, inflate_radius + 1e-6)
+	span = soft - inflate_radius
+	shortfall = min(1.0, max(0.0, (soft - distance) / span))
+	if shortfall <= 0.0:
+		return span
+
+	return span / (2.0 * shortfall * (COST_LETHAL - 1))
+
 def decode_distance(values, inflate_radius, soft_radius):
 	"""Inverse of encode_cost. Kept adjacent to it deliberately: the two have to agree exactly, and a
 	round trip test over the pair catches a disagreement that would otherwise surface as a planner
