@@ -253,23 +253,34 @@ class PlannerNode:
 			rospy.logerr("planner: request %d failed:\n%s", msg.request_id, traceback.format_exc())
 			self.publish_reply(msg.request_id, PlanReply.INTERNAL_ERROR, [], False, 0.0, 0)
 
-	def corridor_for(self, centreline, msg):
-		if len(centreline) < 2:
+	def corridor_for(self, geofence, msg):
+		"""The area the vessel is permitted to be in: a tube round the whole mission, plus the leg being
+		solved, plus a disc at wherever this leg begins.
+
+		The leg has to be in there in its own right. The mission tube follows the mission's own path, and
+		a leg between waypoints that are not adjacent on it — which is what skipping or abandoning one
+		produces — can run clean across ground the mission never covers. Without this that leg would be
+		refused for want of somewhere legal to run, having been given a larger allowance than before.
+		With it the area is always a superset of the single leg's own tube, so nothing that used to be
+		solvable stops being so."""
+		if len(geofence) < 2:
 			return None
 
-		corridor = corridor_from_polyline(centreline, msg.corridor_radius)
-
-		# The tube stays anchored to the mission, so a vessel pushed off its line can end up outside it
-		# with nowhere legal to begin a search. A disc at the start restores somewhere to start from
-		# without letting the tube itself follow the vessel around.
+		corridor = corridor_from_polyline(geofence, msg.corridor_radius)
+		corridor += corridor_from_polyline([(msg.start.x, msg.start.y), (msg.goal.x, msg.goal.y)], msg.corridor_radius)
 		corridor.append(Capsule(msg.start.x, msg.start.y, msg.start.x, msg.start.y, msg.corridor_radius))
 		return corridor
 
 	def solve(self, msg):
-		centreline = [(p.x, p.y) for p in msg.corridor]
-		corridor = self.corridor_for(centreline, msg)
+		corridor = self.corridor_for([(p.x, p.y) for p in msg.corridor], msg)
 
-		field = self.field_for(msg.clearance, corridor, centreline, msg.corridor_radius)
+		# The geofence says where the vessel may be; the divergence penalty says where it ought to be,
+		# and those are no longer the same polyline. Pulling toward the geofence would drag a path
+		# sideways onto whichever mission leg happened to be nearest, which on a survey pattern is the
+		# adjacent row. The line for this leg is the one it is actually running.
+		leg = [(msg.start.x, msg.start.y), (msg.goal.x, msg.goal.y)]
+
+		field = self.field_for(msg.clearance, corridor, leg, msg.corridor_radius)
 		if field is None:
 			rospy.logwarn_throttle(5.0, "planner: request %d arrived before any costmap" % msg.request_id)
 			self.publish_reply(msg.request_id, PlanReply.NO_COSTMAP, [], False, 0.0, 0)
@@ -285,6 +296,10 @@ class PlannerNode:
 		if nudged:
 			rospy.loginfo("planner: request %d goal was blocked, moved %.1fm to clear water", msg.request_id, math.hypot(nudged[0] - goal_x, nudged[1] - goal_y))
 			goal_x, goal_y = nudged
+
+			# Re-aimed at where the leg now ends. Only the centreline is rebuilt, so the geofence raster
+			# is not paid for twice.
+			field.adopt_centreline([(msg.start.x, msg.start.y), (goal_x, goal_y)], msg.corridor_radius)
 
 		heuristic = CoarseHeuristic(field, goal_x, goal_y, factor=self.coarse_factor)
 		raw = self.search.plan(field, msg.start.x, msg.start.y, goal_x, goal_y, msg.corridor_radius, heuristic=heuristic)

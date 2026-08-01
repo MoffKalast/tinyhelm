@@ -169,19 +169,23 @@ class ObstacleMonitorNode:
 	def active(self):
 		return bool(self.mission) and self.next_index < len(self.mission) and len(self.plan) >= 2
 
-	def corridor_polyline(self):
-		"""The mission legs still to run, from the one being followed. Off the mission and never off
-		the plan, so it stays where the survey line is however far a correction pushes us."""
-		return [(x, y) for x, y, _ in self.mission[max(0, self.next_index - 1):]]
+	def geofence_polyline(self):
+		"""The polyline the geofence is built from, and the one drawn as the overlay. One method for both
+		so what is shown is what the search was actually held to.
 
-	def leg_reference(self, index, ax, ay):
-		"""The one mission leg a search is asked to solve. Per leg rather than the whole remainder
-		because a survey pattern folds back on itself, and a tube round the full polyline merges
-		adjacent rows into one blob."""
-		if index <= 0:
-			return [(ax, ay), (self.mission[0][0], self.mission[0][1])]
+		The whole mission rather than the leg being solved. Per leg was the older answer and it kept the
+		tube tight around the survey line, but it tied the allowed area to a leg the search does not
+		necessarily start on: once a waypoint has been skipped or moved, a leg begins somewhere the
+		following leg's tube does not reach, and where the legs are longer than about two radii the
+		allowed area falls into two disconnected pieces with the vessel in the wrong one. The search then
+		fails on geometry alone, in open water, and it does so further into the mission the later it
+		happens, which is what truncated a mission at its first real obstruction.
 
-		return [(self.mission[index - 1][0], self.mission[index - 1][1]), (self.mission[index][0], self.mission[index][1])]
+		Static instead: the area is the mission's own and does not shrink as the mission advances, so a
+		corner already turned still counts as somewhere the vessel may pass through. Legs stay goal
+		directed because each request carries its own start and goal; the geofence only says where the
+		vessel may be, never where it should go."""
+		return [(x, y) for x, y, _ in self.mission]
 
 	def mission_callback(self, msg):
 		poses = path_to_planning_frame(self.tf_buffer, msg, self.planning_frame)
@@ -283,7 +287,7 @@ class ObstacleMonitorNode:
 				rospy.loginfo("obstacle monitor: %d waypoints remaining", len(self.mission) - self.next_index)
 
 		self.publish_remaining()
-		self.markers.publish(self.corridor_polyline(), self.position())
+		self.markers.publish(self.geofence_polyline(), self.position())
 
 	def path_status_callback(self, msg):
 		"""The planner reports on the route rather than the monitor inspecting the map, so this is the
@@ -343,7 +347,7 @@ class ObstacleMonitorNode:
 		msg.start = Point(start[0], start[1], 0.0)
 		msg.goal = Point(goal[0], goal[1], 0.0)
 		msg.clearance = self.clearance()
-		msg.corridor = [Point(x, y, 0.0) for x, y in self.leg_reference(index, start[0], start[1])]
+		msg.corridor = [Point(x, y, 0.0) for x, y in self.geofence_polyline()]
 		msg.corridor_radius = self.max_detour
 		self.request_pub.publish(msg)
 
@@ -388,7 +392,13 @@ class ObstacleMonitorNode:
 			self.report_stuck("Planner could not answer: %s." % self.reason_text(msg.result))
 			return
 
-		if msg.result == PlanReply.OK and len(msg.path) >= 2:
+		# One pose is a legitimate answer, not a failure. It means the start and the goal quantised into
+		# the same cell, which happens when a blocked waypoint is moved back toward the vessel far enough
+		# to land on the end of the leg before it: the waypoint's nearest legal stand-in is somewhere the
+		# route already passes through, so there is nothing to travel and the leg is already satisfied.
+		# Demanding two left the reply falling through to the failure path, where OK has no name and the
+		# waypoint was reported unreachable for a reason of "unknown" before being skipped.
+		if msg.result == PlanReply.OK and msg.path:
 			self.first_failed_at.pop(index, None)
 			self.walk.accept([(p.x, p.y) for p in msg.path], index)
 			self.send_next()
@@ -429,6 +439,7 @@ class ObstacleMonitorNode:
 			PlanReply.NO_ROUTE: "no route within the corridor",
 			PlanReply.NO_COSTMAP: "no costmap yet",
 			PlanReply.INTERNAL_ERROR: "the planner failed internally",
+			PlanReply.OK: "ok",
 		}.get(result, "unknown")
 
 	def finish_walk(self):

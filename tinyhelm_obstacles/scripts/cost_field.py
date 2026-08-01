@@ -271,6 +271,16 @@ class CostField:
 
 		return float(dx / length), float(dy / length)
 
+def nudge_legal(field, x, y):
+	"""Whether a search may legally end here, with enough margin to survive being requantised.
+
+	Testing cost_at alone is not enough. The search builds its own grid with its own origin, so it
+	evaluates the cell centre nearest the goal rather than the goal itself, and that centre can fall in
+	a neighbouring cell of the field. A point moved to just outside the inflation then comes back lethal
+	to the very search it was handed to, and the leg is refused as though the waypoint were still buried
+	after having been moved to clear water. One cell of distance covers the offset."""
+	return field.cost_at(x, y) != LETHAL and field.obstacle_distance_at(x, y) > field.inflate + field.res
+
 def nudge_direction(field, gx, gy, toward_x, toward_y):
 	"""Which way to move a blocked waypoint.
 
@@ -311,7 +321,7 @@ def nudge_nearest(field, gx, gy, toward_x, toward_y, max_distance):
 					continue
 
 				x, y = field.cell_to_world(cell[0] + ox, cell[1] + oy)
-				if math.hypot(x - gx, y - gy) > max_distance or field.cost_at(x, y) == LETHAL:
+				if math.hypot(x - gx, y - gy) > max_distance or not nudge_legal(field, x, y):
 					continue
 
 				distance = math.hypot(x - toward_x, y - toward_y)
@@ -345,7 +355,7 @@ def nudge_goal(field, gx, gy, toward_x, toward_y, max_distance):
 	for i in range(1, int(max_distance / step) + 1):
 		x = gx + direction[0] * i * step
 		y = gy + direction[1] * i * step
-		if field.cost_at(x, y) != LETHAL:
+		if nudge_legal(field, x, y):
 			return x, y
 
 	return nudge_nearest(field, gx, gy, toward_x, toward_y, max_distance)

@@ -95,19 +95,30 @@ class GoalServer:
 		rx, ry = pose.position.x, pose.position.y
 		reach, divergence = self.get_thresholds()
 
-		# Standing on a waypoint. Earliest occurrence, so a path that revisits a position does not
-		# start at the wrong one: goal_and_return begins and ends where we are right now
-		for i, candidate in enumerate(poses):
-			p = candidate.pose.position
-			if math.hypot(p.x - rx, p.y - ry) <= reach:
-				return min(i, len(poses) - 2)
-
-		# Not on a waypoint, so already somewhere along a leg
+		# Already somewhere along a leg. Asked first, because it is the only one of the two tests that
+		# cannot answer with somewhere further along the path than the vessel really is: whatever leg it
+		# is on always matches, so the earliest match is at worst an earlier leg, and repeating a leg is
+		# recoverable where skipping one is not.
+		#
+		# Asking the waypoint test first could skip forward, and did. A revision names the position the
+		# vessel held when planning began, and on a pattern that returns near its own start the tail of
+		# the path sweeps back through where the vessel has since got to. Poses are sparse along a long
+		# leg, so once the head has gone stale there may be no pose near the vessel until the tail comes
+		# back around, and the earliest pose within reach was then one of the last few on the path. The
+		# vessel was told it had a couple of legs left of a mission it had barely started, and finished.
 		for i in range(len(poses) - 1):
 			a = poses[i].pose.position
 			b = poses[i + 1].pose.position
 			if point_segment_distance(rx, ry, a.x, a.y, b.x, b.y) <= divergence:
 				return i
+
+		# On none of the legs, so standing at a waypoint or holding off the line. Earliest occurrence
+		# again, so a path that revisits a position does not resume at the wrong one: goal_and_return
+		# begins and ends where we are right now.
+		for i, candidate in enumerate(poses):
+			p = candidate.pose.position
+			if math.hypot(p.x - rx, p.y - ry) <= reach:
+				return min(i, len(poses) - 2)
 
 		return None
 
