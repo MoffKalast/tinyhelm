@@ -1,7 +1,8 @@
 import math
 import heapq
+import numpy as np
 
-from cost_field import LETHAL
+from cost_field import LETHAL, shortfall, soft_penalty
 from utils import NEIGHBOURS
 
 OK = "ok"
@@ -11,59 +12,91 @@ START_TRAPPED = "start_trapped"
 NO_ROUTE = "no_route"
 UNREACHABLE_COARSE = "unreachable_coarse"
 
-def integrated_cost(field, ax, ay, bx, by, step):
-	min_x, max_x = min(ax, bx), max(ax, bx)
-	min_y, max_y = min(ay, by), max(ay, by)
-	field_max_x = field.origin_x + field.size * field.res
-	field_max_y = field.origin_y + field.size * field.res
+OCTILE_OVERSHOOT = 1.0 + math.sqrt(2.0) - 2.0 / math.sqrt(2.0) + 1e-9
 
-	if max_x < field.origin_x or min_x > field_max_x or max_y < field.origin_y or min_y > field_max_y:
-		return math.hypot(bx - ax, by - ay)
+class CoarseHeuristic:
 
-	length = math.hypot(bx - ax, by - ay)
-	samples = max(1, int(length / step))
+	def __init__(self, field, gx, gy, factor):
+		self.factor = factor
+		self.res = field.res * factor
+		self.origin_x = field.origin_x
+		self.origin_y = field.origin_y
+		self.goal_x = gx
+		self.goal_y = gy
 
-	soft = 0.0
-	for i in range(1, samples + 1):
-		t = i / samples
-		c = field.cost_at(ax + t * (bx - ax), ay + t * (by - ay))
-		if c == LETHAL:
-			return LETHAL
-		soft += c
+		blocked, soft = self.downsample(field)
+		self.rows, self.cols = blocked.shape
 
-	return length * (1.0 + soft / samples)
+		goal = self.to_cell(gx, gy)
+		self.goal_inside = self.inside(goal)
 
-def cumulative_cost(field, points, step):
-	cumulative = [0.0]
-	for i in range(1, len(points)):
-		leg = integrated_cost(field, points[i - 1][0], points[i - 1][1], points[i][0], points[i][1], step)
-		cumulative.append(LETHAL if leg == LETHAL else cumulative[-1] + leg)
+		self.cost_to_goal = self.dijkstra(blocked, soft, goal) if self.goal_inside else {}
+		self.trust_unreachable = self.goal_inside and bool(self.cost_to_goal) and not self.reached_edge()
 
-	return cumulative
+	def downsample(self, field):
+		occupied = field.dist <= field.inflate
+		n = occupied.shape[0] // self.factor
+		usable = self.factor * n
 
-def smooth_path(field, points, step):
-	#String pulling that respects the cost field. A shortcut is taken only when it is no more expensive than the stretch it replaces
-	if len(points) <= 2:
-		return list(points)
+		blocks = occupied[:usable, :usable].reshape(n, self.factor, n, self.factor)
+		blocked = blocks.all(axis=(1, 3))
 
-	cumulative = cumulative_cost(field, points, step)
+		graded = np.clip(shortfall(field.dist[:usable, :usable], field.inflate, field.soft), 0.0, 1.0)
+		penalty = np.where(occupied[:usable, :usable], np.inf, soft_penalty(graded))
+		soft = penalty.reshape(n, self.factor, n, self.factor).min(axis=(1, 3))
 
-	out = [points[0]]
-	i = 0
-	while i < len(points) - 1:
-		j = len(points) - 1
-		while j > i + 1:
-			direct = integrated_cost(field, points[i][0], points[i][1], points[j][0], points[j][1], step)
-			stretch = LETHAL if cumulative[i] == LETHAL else cumulative[j] - cumulative[i]
-			if direct < LETHAL and direct <= stretch + 1e-9:
-				break
+		inside = field.corridor_ok[:usable, :usable].reshape(n, self.factor, n, self.factor).any(axis=(1, 3))
+		blocked |= ~inside
 
-			j -= 1
+		return blocked, soft
 
-		out.append(points[j])
-		i = j
+	def reached_edge(self):
+		last_col = self.cols - 1
+		last_row = self.rows - 1
+		return any(cx == 0 or cy == 0 or cx == last_col or cy == last_row for cx, cy in self.cost_to_goal)
 
-	return out
+	def to_cell(self, x, y):
+		return int(math.floor((x - self.origin_x) / self.res)), int(math.floor((y - self.origin_y) / self.res))
+
+	def inside(self, cell):
+		return 0 <= cell[0] < self.cols and 0 <= cell[1] < self.rows
+
+	def dijkstra(self, blocked, soft, goal):
+		if blocked[goal[1], goal[0]]:
+			return {}
+
+		cost = {}
+		queue = [(0.0, goal)]
+		while queue:
+			distance, cell = heapq.heappop(queue)
+			if cell in cost:
+				continue
+
+			cost[cell] = distance
+			here = soft[cell[1], cell[0]]
+			for ox, oy in NEIGHBOURS:
+				neighbour = (cell[0] + ox, cell[1] + oy)
+				if not self.inside(neighbour):
+					continue
+				if neighbour in cost or blocked[neighbour[1], neighbour[0]]:
+					continue
+
+				cheapest = min(here, soft[neighbour[1], neighbour[0]])
+				step = math.hypot(ox, oy) * self.res * (1.0 + cheapest)
+				heapq.heappush(queue, (distance + step, neighbour))
+
+		return cost
+
+	def estimate(self, x, y):
+		cell = self.to_cell(x, y)
+		if self.inside(cell):
+			distance = self.cost_to_goal.get(cell)
+			if distance is not None:
+				return distance / OCTILE_OVERSHOOT
+			if self.trust_unreachable:
+				return float("inf")
+
+		return math.hypot(self.goal_x - x, self.goal_y - y)
 
 class SearchGrid:
 
@@ -143,14 +176,15 @@ class SearchGrid:
 
 class ThetaStar:
 
-	def __init__(self, nudge_radius=8):
+	def __init__(self, nudge_radius=8, coarse_factor=4):
 		self.nudge_radius = nudge_radius
+		self.coarse_factor = coarse_factor
 
 		self.last_expansions = 0
 		self.reason = OK
 		self.start_nudged = False
 
-	def plan(self, field, sx, sy, gx, gy, margin, heuristic):
+	def plan(self, field, sx, sy, gx, gy, margin):
 		self.last_expansions = 0
 		self.reason = OK
 		self.start_nudged = False
@@ -173,6 +207,7 @@ class ThetaStar:
 			self.start_nudged = True
 
 		start_x, start_y = grid.to_world(start)
+		heuristic = CoarseHeuristic(field, gx, gy, self.coarse_factor)
 		if heuristic.estimate(start_x, start_y) == LETHAL:
 			self.reason = UNREACHABLE_COARSE
 			return []
@@ -253,3 +288,52 @@ class ThetaStar:
 		points[-1] = (gx, gy)
 
 		return points
+
+def smooth_path(field, points, step):
+	#String pulling that respects the cost field. A shortcut is taken only when it is no more expensive than the stretch it replaces
+	if len(points) <= 2:
+		return list(points)
+
+	def integrated_cost(ax, ay, bx, by):
+		min_x, max_x = min(ax, bx), max(ax, bx)
+		min_y, max_y = min(ay, by), max(ay, by)
+		field_max_x = field.origin_x + field.size * field.res
+		field_max_y = field.origin_y + field.size * field.res
+
+		if max_x < field.origin_x or min_x > field_max_x or max_y < field.origin_y or min_y > field_max_y:
+			return math.hypot(bx - ax, by - ay)
+
+		length = math.hypot(bx - ax, by - ay)
+		samples = max(1, int(length / step))
+
+		soft = 0.0
+		for i in range(1, samples + 1):
+			t = i / samples
+			c = field.cost_at(ax + t * (bx - ax), ay + t * (by - ay))
+			if c == LETHAL:
+				return LETHAL
+			soft += c
+
+		return length * (1.0 + soft / samples)
+
+	cumulative = [0.0]
+	for i in range(1, len(points)):
+		leg = integrated_cost(points[i - 1][0], points[i - 1][1], points[i][0], points[i][1])
+		cumulative.append(LETHAL if leg == LETHAL else cumulative[-1] + leg)
+
+	out = [points[0]]
+	i = 0
+	while i < len(points) - 1:
+		j = len(points) - 1
+		while j > i + 1:
+			direct = integrated_cost(points[i][0], points[i][1], points[j][0], points[j][1])
+			stretch = LETHAL if cumulative[i] == LETHAL else cumulative[j] - cumulative[i]
+			if direct < LETHAL and direct <= stretch + 1e-9:
+				break
+
+			j -= 1
+
+		out.append(points[j])
+		i = j
+
+	return out

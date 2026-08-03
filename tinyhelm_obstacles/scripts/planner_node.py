@@ -10,7 +10,6 @@ import rospy
 from geometry_msgs.msg import Point
 from nav_msgs.msg import OccupancyGrid
 
-from heuristic import CoarseHeuristic
 from cost_field import CostField, corridor_from_polyline, decode_distance, distance_quantum, nudge_goal
 from theta_star import GOAL_IN_OBSTACLE, GOAL_OUTSIDE_CORRIDOR, NO_ROUTE, OK, START_TRAPPED, UNREACHABLE_COARSE, ThetaStar, smooth_path
 from tinyhelm_obstacles.msg import PathStatus, PathWatch, PlanReply, PlanRequest
@@ -51,7 +50,7 @@ class PlannerNode:
 		self.last_blocked = None
 		self.last_status = rospy.Time(0)
 
-		self.search = ThetaStar()
+		self.search = ThetaStar(coarse_factor=self.coarse_factor)
 
 		self.reply_pub = rospy.Publisher("/obstacles/plan_reply", PlanReply, queue_size=5)
 		self.status_pub = rospy.Publisher("/obstacles/path_status", PathStatus, queue_size=5, latch=True)
@@ -218,8 +217,7 @@ class PlannerNode:
 
 			field.adopt_centreline([(msg.start.x, msg.start.y), (goal_x, goal_y)], msg.corridor_radius)
 
-		heuristic = CoarseHeuristic(field, goal_x, goal_y, factor=self.coarse_factor)
-		raw = self.search.plan(field, msg.start.x, msg.start.y, goal_x, goal_y, msg.corridor_radius, heuristic=heuristic)
+		raw = self.search.plan(field, msg.start.x, msg.start.y, goal_x, goal_y, msg.corridor_radius)
 		path = smooth_path(field, raw, ROUTE_SAMPLE_CELLS * field.res) if raw else []
 		elapsed = time.time() - started
 

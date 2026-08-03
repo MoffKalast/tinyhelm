@@ -185,66 +185,66 @@ class CostField:
 
 		return float(dx / length), float(dy / length)
 
-def nudge_legal(field, x, y):
-	return field.cost_at(x, y) != LETHAL and field.obstacle_distance_at(x, y) > field.inflate + field.res
-
-def nudge_direction(field, gx, gy, toward_x, toward_y):
-	vx = toward_x - gx
-	vy = toward_y - gy
-	length = math.hypot(vx, vy)
-	if length <= 0.0:
-		return 1.0, 0.0
-
-	vx /= length
-	vy /= length
-
-	gradient = field.distance_gradient(gx, gy)
-	if gradient is None or gradient[0] * vx + gradient[1] * vy <= 0.0:
-		return vx, vy
-
-	return gradient
-
-def nudge_nearest(field, gx, gy, toward_x, toward_y, max_distance):
-	cell = field.world_to_cell(gx, gy)
-	if cell is None:
-		return None
-
-	best = None
-	best_distance = 0.0
-	for radius in range(1, int(max_distance / field.res) + 1):
-		for ox in range(-radius, radius + 1):
-			for oy in range(-radius, radius + 1):
-				if max(abs(ox), abs(oy)) != radius:
-					continue
-
-				x, y = field.cell_to_world(cell[0] + ox, cell[1] + oy)
-				if math.hypot(x - gx, y - gy) > max_distance or not nudge_legal(field, x, y):
-					continue
-
-				distance = math.hypot(x - toward_x, y - toward_y)
-				if best is None or distance < best_distance:
-					best = (x, y)
-					best_distance = distance
-
-		if best is not None:
-			return best
-
-	return None
-
 def nudge_goal(field, gx, gy, toward_x, toward_y, max_distance):
 	if field.cost_at(gx, gy) != LETHAL:
 		return None
 
-	direction = nudge_direction(field, gx, gy, toward_x, toward_y)
+	def legal(x, y):
+		return field.cost_at(x, y) != LETHAL and field.obstacle_distance_at(x, y) > field.inflate + field.res
+
+	def direction():
+		vx = toward_x - gx
+		vy = toward_y - gy
+		length = math.hypot(vx, vy)
+		if length <= 0.0:
+			return 1.0, 0.0
+
+		vx /= length
+		vy /= length
+
+		gradient = field.distance_gradient(gx, gy)
+		if gradient is None or gradient[0] * vx + gradient[1] * vy <= 0.0:
+			return vx, vy
+
+		return gradient
+
+	def nearest():
+		cell = field.world_to_cell(gx, gy)
+		if cell is None:
+			return None
+
+		best = None
+		best_distance = 0.0
+		for radius in range(1, int(max_distance / field.res) + 1):
+			for ox in range(-radius, radius + 1):
+				for oy in range(-radius, radius + 1):
+					if max(abs(ox), abs(oy)) != radius:
+						continue
+
+					x, y = field.cell_to_world(cell[0] + ox, cell[1] + oy)
+					if math.hypot(x - gx, y - gy) > max_distance or not legal(x, y):
+						continue
+
+					distance = math.hypot(x - toward_x, y - toward_y)
+					if best is None or distance < best_distance:
+						best = (x, y)
+						best_distance = distance
+
+			if best is not None:
+				return best
+
+		return None
+
+	towards = direction()
 	step = 0.5 * field.res
 
 	for i in range(1, int(max_distance / step) + 1):
-		x = gx + direction[0] * i * step
-		y = gy + direction[1] * i * step
-		if nudge_legal(field, x, y):
+		x = gx + towards[0] * i * step
+		y = gy + towards[1] * i * step
+		if legal(x, y):
 			return x, y
 
-	return nudge_nearest(field, gx, gy, toward_x, toward_y, max_distance)
+	return nearest()
 
 COST_LETHAL = 100
 
