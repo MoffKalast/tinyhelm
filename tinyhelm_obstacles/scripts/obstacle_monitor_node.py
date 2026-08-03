@@ -238,7 +238,7 @@ class ObstacleMonitorNode:
 		self.state = NO_MISSION
 		self.watched = []
 		self.publish_watch()
-		self.markers.publish([], None)
+		self.markers.publish([], MonitorStatus.OK)
 		self.publish_remaining()
 		self.publish_status(MonitorStatus.OK, "No active mission.")
 
@@ -287,7 +287,7 @@ class ObstacleMonitorNode:
 				rospy.loginfo("obstacle monitor: %d waypoints remaining", len(self.mission) - self.next_index)
 
 		self.publish_remaining()
-		self.markers.publish(self.geofence_polyline(), self.position())
+		self.markers.publish(self.geofence_polyline(), self.severity())
 
 	def path_status_callback(self, msg):
 		"""The planner reports on the route rather than the monitor inspecting the map, so this is the
@@ -509,6 +509,9 @@ class ObstacleMonitorNode:
 		msg.clearance = self.clearance()
 		self.watch_pub.publish(msg)
 
+	def severity(self):
+		return self.last_status[0] if self.last_status else MonitorStatus.OK
+
 	def publish_status(self, status, message):
 		# The planner reports steadily rather than only on change, which is what keeps progress and the
 		# corridor overlay current, but it would otherwise have us restating an unchanged status to the
@@ -516,12 +519,18 @@ class ObstacleMonitorNode:
 		if (status, message) == self.last_status:
 			return
 
+		changed = self.last_status is None or status != self.last_status[0]
 		self.last_status = (status, message)
 
 		msg = MonitorStatus()
 		msg.status = status
 		msg.message = message
 		self.status_pub.publish(msg)
+
+		# The overlay is redrawn before the status that follows from it is decided, so a change of
+		# severity has to reach back and recolour what is already on screen
+		if changed:
+			self.markers.recolour(status)
 
 if __name__ == "__main__":
 	rospy.init_node("tinyhelm_obstacles")

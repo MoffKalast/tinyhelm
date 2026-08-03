@@ -11,7 +11,7 @@ from geometry_msgs.msg import Point
 from nav_msgs.msg import OccupancyGrid
 
 from coarse_heuristic import CoarseHeuristic
-from cost_field import Capsule, CostField, corridor_from_polyline, decode_distance, distance_quantum, nudge_goal
+from cost_field import CostField, corridor_from_polyline, decode_distance, distance_quantum, nudge_goal
 from theta_star import GOAL_IN_OBSTACLE, GOAL_OUTSIDE_CORRIDOR, NO_ROUTE, OK, START_TRAPPED, UNREACHABLE_COARSE, ThetaStar, smooth_path
 from tinyhelm_obstacles.msg import PathStatus, PathWatch, PlanReply, PlanRequest
 
@@ -254,22 +254,26 @@ class PlannerNode:
 			self.publish_reply(msg.request_id, PlanReply.INTERNAL_ERROR, [], False, 0.0, 0)
 
 	def corridor_for(self, geofence, msg):
-		"""The area the vessel is permitted to be in: a tube round the whole mission, plus the leg being
-		solved, plus a disc at wherever this leg begins.
+		"""The area the vessel is permitted to be in: a tube of corridor_radius round the whole mission,
+		and nothing else.
 
-		The leg has to be in there in its own right. The mission tube follows the mission's own path, and
-		a leg between waypoints that are not adjacent on it — which is what skipping or abandoning one
-		produces — can run clean across ground the mission never covers. Without this that leg would be
-		refused for want of somewhere legal to run, having been given a larger allowance than before.
-		With it the area is always a superset of the single leg's own tube, so nothing that used to be
-		solvable stops being so."""
+		There used to be a bubble of the same radius at wherever the leg began, so that a vessel pushed
+		off its line always had somewhere legal to start from. It was not worth what it cost. Anchored to
+		the vessel rather than to the mission, it granted fresh ground beyond the fence every time a
+		correction was planned, the route ran out into it, and the next correction began from out there
+		and granted more; against a long obstacle the vessel followed it out of the survey area a radius
+		at a time. Clamping the radius bounded that but never quite closed it, and the two definitions of
+		the allowed area then had to be kept in step in two places.
+
+		Nothing is needed in its place. The helm anchors every mission at the vessel's own position, so
+		the tube covers where the vessel is standing when the mission starts, and the controller holds it
+		within its line divergence thereafter. A vessel outside the fence is a vessel that has been
+		pushed out of its geofence, and refusing to plan is the honest answer to that. Widen
+		max_lateral_detour if the working area needs to be larger."""
 		if len(geofence) < 2:
 			return None
 
-		corridor = corridor_from_polyline(geofence, msg.corridor_radius)
-		corridor += corridor_from_polyline([(msg.start.x, msg.start.y), (msg.goal.x, msg.goal.y)], msg.corridor_radius)
-		corridor.append(Capsule(msg.start.x, msg.start.y, msg.start.x, msg.start.y, msg.corridor_radius))
-		return corridor
+		return corridor_from_polyline(geofence, msg.corridor_radius)
 
 	def solve(self, msg):
 		corridor = self.corridor_for([(p.x, p.y) for p in msg.corridor], msg)
