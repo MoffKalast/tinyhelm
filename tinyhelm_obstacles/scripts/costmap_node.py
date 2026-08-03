@@ -6,7 +6,7 @@ import tf2_ros
 
 from nav_msgs.msg import OccupancyGrid
 from sensor_msgs.msg import PointCloud2
-from std_msgs.msg import Empty
+from std_msgs.msg import Bool, Empty
 
 from cloud import cloud_xy
 from cost_field import encode_cost
@@ -20,7 +20,12 @@ class CostmapNode:
 
 	Ingestion happens on the subscriber threads because it is bounded and per message. Maintenance
 	and publishing happen on one timer, so decay keeps running and the map keeps fading even if the
-	sensors go quiet, which is exactly when a stale map is most dangerous."""
+	sensors go quiet, which is exactly when a stale map is most dangerous.
+
+	All of that is gated on the helm's enabled topic. While disabled the cloud subscriptions are
+	dropped and the maintenance timer is stopped, which also stops the costmap publication the
+	planner keys off, and the map is cleared so re-enabling starts from no evidence rather than
+	from whatever was true however long ago."""
 
 	def __init__(self):
 		self.planning_frame = rospy.get_param("/planning_frame", "local") 
@@ -55,20 +60,52 @@ class CostmapNode:
 
 		self.grid_pub = rospy.Publisher("/obstacles/costmap", OccupancyGrid, queue_size=1, latch=True)
 
-		rospy.Subscriber("/reliable_cloud", PointCloud2, self.reliable_callback, queue_size=5)
-		rospy.Subscriber("/unreliable_cloud", PointCloud2, self.unreliable_callback, queue_size=5)
-		rospy.Subscriber("/free_cloud", PointCloud2, self.free_callback, queue_size=5)
-		rospy.Subscriber("/obstacles/clear_costmap", Empty, self.clear_callback, queue_size=1)
+		self.clear_sub = rospy.Subscriber("/obstacles/clear_costmap", Empty, self.clear_callback, queue_size=1)
+
+		self.reliable_sub = rospy.Subscriber("/reliable_cloud", PointCloud2, self.reliable_callback, queue_size=2)
+		self.unreliable_sub = rospy.Subscriber("/unreliable_cloud", PointCloud2, self.unreliable_callback, queue_size=2)
+		self.free_sub = rospy.Subscriber("/free_cloud", PointCloud2, self.free_callback, queue_size=2)
 
 		rospy.loginfo("costmap: %.0fm window at %.2fm (%d cells), soft radius %.1fm, frame %s", self.extent, self.res, size_cells, self.soft_radius, self.planning_frame)
 
+		self.enabled = True
 		self.timer = rospy.Timer(rospy.Duration(0.1), self.maintain)
 
+		self.enabled_topic = rospy.get_param("/tinyhelm_core/enabled_topic", "/tinyhelm/enabled")
+		self.enabled_sub = rospy.Subscriber(self.enabled_topic, Bool, self.enabled_callback, queue_size=1)
+
+	def enabled_callback(self, msg):
+		if msg.data == self.enabled:
+			return
+
+		self.enabled = msg.data
+
+		if self.enabled:
+			self.reliable_sub = rospy.Subscriber("/reliable_cloud", PointCloud2, self.reliable_callback, queue_size=2)
+			self.unreliable_sub = rospy.Subscriber("/unreliable_cloud", PointCloud2, self.unreliable_callback, queue_size=2)
+			self.free_sub = rospy.Subscriber("/free_cloud", PointCloud2, self.free_callback, queue_size=2)
+
+			self.timer = rospy.Timer(rospy.Duration(0.1), self.maintain)
+			rospy.loginfo("Costmap enabled")
+		else:
+			self.reliable_sub.unregister()
+			self.unreliable_sub.unregister()
+			self.free_sub.unregister()
+
+			if self.timer is not None:
+				self.timer.shutdown()
+				self.timer = None
+
+			with self.lock:
+				self.grid.clear()
+				snapshot = self.grid.dist.copy()
+				origin_x, origin_y = self.grid.origin_x, self.grid.origin_y
+
+			self.publish(snapshot, origin_x, origin_y)
+			rospy.loginfo("Costmap disabled")
+
 	def robot_position(self):
-		"""A pose is not optional: without one there is no window to maintain. Waits rather than
-		giving up, since a gap here is a localisation dropout and the vessel is not going anywhere
-		useful until it clears."""
-		while not rospy.is_shutdown():
+		while not rospy.is_shutdown() and self.enabled:
 			try:
 				tf = self.tf_buffer.lookup_transform(self.planning_frame, self.robot_frame, rospy.Time(0))
 				return tf.transform.translation.x, tf.transform.translation.y
@@ -144,12 +181,7 @@ class CostmapNode:
 		msg.info.origin.position.x = origin_x
 		msg.info.origin.position.y = origin_y
 		msg.info.origin.orientation.w = 1.0
-
-		# Encoded with no hard inflation, so what goes out is the distance field itself and every
-		# consumer applies its own clearance. Baking a radius in here would pin the planner to one
-		# vessel geometry and lose the distances inside it.
 		msg.data = encode_cost(dist, 0.0, self.soft_radius).ravel().tolist()
-
 		self.grid_pub.publish(msg)
 
 if __name__ == "__main__":
