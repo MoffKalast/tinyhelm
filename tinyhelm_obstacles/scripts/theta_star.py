@@ -2,6 +2,7 @@ import math
 import heapq
 
 from cost_field import LETHAL
+from heuristic import EuclideanHeuristic
 
 NEIGHBOURS = ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1))
 
@@ -10,23 +11,14 @@ GOAL_IN_OBSTACLE = "goal_in_obstacle"
 GOAL_OUTSIDE_CORRIDOR = "goal_outside_corridor"
 START_TRAPPED = "start_trapped"
 NO_ROUTE = "no_route"
-
-# Refused before searching, on the coarse layer's word alone rather than by exhausting the corridor.
-# Reported separately because the two are indistinguishable in a reply otherwise, and the difference
-# is the whole difference between a leg that is really impossible and a heuristic that is lying.
 UNREACHABLE_COARSE = "unreachable_coarse"
 
 def integrated_cost(field, ax, ay, bx, by, step):
-	"""Path cost of one straight segment in world space: length plus the soft proximity cost
-	integrated along it. LETHAL if any sample is lethal. Shares its convention with
-	SearchGrid.segment_cost so smoothing compares like with like against the search."""
 	min_x, max_x = min(ax, bx), max(ax, bx)
 	min_y, max_y = min(ay, by), max(ay, by)
 	field_max_x = field.origin_x + field.size * field.res
 	field_max_y = field.origin_y + field.size * field.res
 
-	# Outside the loaded window there is nothing to sample against; the field is free out there by
-	# convention (only a local map is ever loaded), so the segment costs exactly its length.
 	if max_x < field.origin_x or min_x > field_max_x or max_y < field.origin_y or min_y > field_max_y:
 		return math.hypot(bx - ax, by - ay)
 
@@ -44,8 +36,6 @@ def integrated_cost(field, ax, ay, bx, by, step):
 	return length * (1.0 + soft / samples)
 
 def cumulative_cost(field, points, step):
-	"""Running cost of the path up to each point, so a shortcut can be compared against the stretch
-	it would replace with two lookups instead of a fresh summation per candidate."""
 	cumulative = [0.0]
 	for i in range(1, len(points)):
 		leg = integrated_cost(field, points[i - 1][0], points[i - 1][1], points[i][0], points[i][1], step)
@@ -54,9 +44,7 @@ def cumulative_cost(field, points, step):
 	return cumulative
 
 def smooth_path(field, points, step):
-	"""String pulling that respects the cost field. A shortcut is taken only when it is no more
-	expensive than the stretch it replaces, so the standoff the search paid for survives instead of
-	being pulled back onto the inflation boundary."""
+	#String pulling that respects the cost field. A shortcut is taken only when it is no more expensive than the stretch it replaces
 	if len(points) <= 2:
 		return list(points)
 
@@ -80,22 +68,17 @@ def smooth_path(field, points, step):
 	return out
 
 class SearchGrid:
-	"""Virtual grid over the bounding box of start and goal plus a margin, at the cost field's
-	resolution. Nothing is allocated until a cell is touched. World lookups go through the field,
-	which reports free outside its extent, so unseen space stays optimistically clear and the
-	search is not clipped at the loaded window."""
 
 	def __init__(self, field, sx, sy, gx, gy, margin):
 		self.field = field
 		self.res = field.res
+
 		self.origin_x = math.floor((min(sx, gx) - margin) / self.res) * self.res
 		self.origin_y = math.floor((min(sy, gy) - margin) / self.res) * self.res
+
 		self.cols = int(math.ceil((max(sx, gx) + margin - self.origin_x) / self.res)) + 1
 		self.rows = int(math.ceil((max(sy, gy) + margin - self.origin_y) / self.res)) + 1
 
-		# Every lookup quantises to these cells and both origins are snapped to resolution
-		# multiples, so the memo is exact and collapses the millions of repeated field queries a
-		# search makes into one per distinct cell
 		self.cost_cache = {}
 
 	def to_world(self, cell):
@@ -134,13 +117,12 @@ class SearchGrid:
 		return True
 
 	def segment_cost(self, a, b):
-		"""Euclidean length plus the soft proximity cost integrated along the segment, sampled once
-		per crossed cell. LETHAL if any sample is lethal."""
 		ax, ay = a
 		dx, dy = b[0] - ax, b[1] - ay
 		steps = max(1, abs(dx), abs(dy))
 		length = math.hypot(dx, dy) * self.res
 
+		#Euclidean length plus the soft proximity cost integrated along the segment, sampled once per crossed cell. LETHAL if any sample is lethal.
 		soft = 0.0
 		for i in range(1, steps + 1):
 			t = i / steps
@@ -152,8 +134,6 @@ class SearchGrid:
 		return length * (1.0 + soft / steps)
 
 	def nudge_free(self, cell, max_radius):
-		"""Sensor noise, or simply hugging a corridor, can leave the vessel's own cell inside the
-		inflation. Walk outward rings for somewhere the search can legally begin."""
 		for r in range(1, max_radius + 1):
 			for oy in range(-r, r + 1):
 				span = (-r, r) if abs(oy) != r else range(-r, r + 1)
@@ -161,32 +141,11 @@ class SearchGrid:
 					candidate = (cell[0] + ox, cell[1] + oy)
 					if self.inside(candidate) and not self.lethal(candidate):
 						return candidate
-
 		return None
 
-class EuclideanHeuristic:
-	"""Straight line distance to the goal. Admissible because segment cost is length times a
-	factor of at least one, so it can never overestimate."""
 
-	def __init__(self, gx, gy):
-		self.gx = gx
-		self.gy = gy
-
-	def estimate(self, x, y):
-		return math.hypot(self.gx - x, self.gy - y)
 
 class ThetaStar:
-	"""Any-angle Theta* on a virtual grid at the cost field's resolution.
-
-	Two departures from the textbook, both because the grid is weighted rather than uniform. The
-	parent jump is taken only when it is actually cheaper: canonical Theta* takes it whenever line
-	of sight exists, which is sound only when the triangle inequality holds, and with a soft
-	proximity cost it does not. Taking it unconditionally drove every path onto the straight line
-	through the cheapest-looking gap and made the soft cost purely decorative. Ties are broken
-	toward larger g, since equal-f plateaus in open water are what made this crawl.
-
-	There is no expansion limit. The corridor bounds the reachable set, so an exhaustive failure is
-	bounded by geometry; a limit only turned slow searches into wrong answers."""
 
 	def __init__(self, nudge_radius=8):
 		self.nudge_radius = nudge_radius
@@ -196,9 +155,6 @@ class ThetaStar:
 		self.start_nudged = False
 
 	def plan(self, field, sx, sy, gx, gy, margin, heuristic=None):
-		"""Returns a list of (x, y), empty on failure with self.reason saying why. When
-		self.start_nudged is set the first point is not the vessel's position but the nearest place
-		the search could legally start; the caller owns closing that gap."""
 		self.last_expansions = 0
 		self.reason = OK
 		self.start_nudged = False
@@ -222,8 +178,6 @@ class ThetaStar:
 			start = nudged
 			self.start_nudged = True
 
-		# An optimistic heuristic that cannot reach the goal proves it is unreachable at full
-		# resolution too, so the expensive exhaustive confirmation can be skipped entirely
 		start_x, start_y = grid.to_world(start)
 		if heuristic.estimate(start_x, start_y) == LETHAL:
 			self.reason = UNREACHABLE_COARSE
@@ -266,9 +220,6 @@ class ThetaStar:
 				cost = g[current] + grid.segment_cost(current, neighbour)
 				via = current
 
-				# Geometric length is a lower bound on segment cost, so a jump that cannot beat the
-				# step on length alone cannot beat it at all. Testing that first skips the sampling
-				# and the line of sight walk for most neighbours without changing any answer.
 				ancestor = parent[current]
 				if ancestor != current and g[ancestor] + grid.straight_length(ancestor, neighbour) < cost:
 					jump = g[ancestor] + grid.segment_cost(ancestor, neighbour)
@@ -303,10 +254,6 @@ class ThetaStar:
 
 		points.reverse()
 
-		# Snap the ends onto the real request so quantisation does not accumulate across chained
-		# legs. The start is only snapped when the search actually began there; after a nudge the
-		# first point has to stay the reachable one or the opening segment cuts back through the
-		# inflation the nudge existed to escape.
 		if not self.start_nudged:
 			points[0] = (sx, sy)
 		points[-1] = (gx, gy)

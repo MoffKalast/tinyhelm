@@ -12,17 +12,8 @@ from tinyhelm_core.msg import MonitorStatus
 from tinyhelm_obstacles.msg import PathStatus, PathWatch, PlanReply, PlanRequest
 from utils import PendingRequest, make_path, path_to_planning_frame, poses_to_xy, poses_to_xyz, robot_position, tail_cursor
 
-# How far a route point may sit from where counting back says it should before we call it a desync.
-# Progress does not depend on this; it only has to absorb float round trips through messages.
 ROUTE_MATCH = 0.01
-
-# How close a solved leg has to end to the waypoint it was aimed at to count as having reached it. The
-# planner ends exactly on the goal it was given, so anything further out is a waypoint it had to move.
 REACHED_WAYPOINT = 0.01
-
-# How far a fresh correction has to differ from the one already being followed to be worth handing over.
-# Republishing restarts the controller on its route, so a correction that only jitters by less than this
-# costs more in restarts than the new geometry is worth.
 SAME_CORRECTION = 0.5
 
 NO_MISSION = "no_mission"
@@ -30,9 +21,17 @@ CLEAR = "clear"
 CORRECTING = "correcting"
 STUCK = "stuck"
 
+REASON_TEXT = {
+	PlanReply.GOAL_IN_OBSTACLE: "waypoint is inside an obstacle",
+	PlanReply.GOAL_OUTSIDE_CORRIDOR: "waypoint lies outside its own corridor",
+	PlanReply.START_TRAPPED: "no clear water around the vessel to start from",
+	PlanReply.NO_ROUTE: "no route within the corridor",
+	PlanReply.NO_COSTMAP: "no costmap yet",
+	PlanReply.INTERNAL_ERROR: "the planner failed internally",
+	PlanReply.OK: "ok",
+}
+
 class Correction:
-	"""One correction being assembled, a leg at a time. Appends and advances; it decides nothing
-	about what gets published."""
 
 	def __init__(self, mission, first_index, rx, ry):
 		self.mission = mission
@@ -66,40 +65,21 @@ class Correction:
 			self.cursor += 1
 			return
 
-		# Snapping the end onto the waypoint keeps quantisation from drifting the route off the survey
-		# line, but only where the planner reached the waypoint at all. A goal it had to move out of an
-		# obstacle comes back as a different point on purpose, and putting it back would steer the leg
-		# into the very thing the move was escaping.
 		if math.hypot(self.points[-1][0] - self.mission[index][0], self.points[-1][1] - self.mission[index][1]) <= REACHED_WAYPOINT:
 			self.points[-1] = self.mission[index]
 
-		# Still that waypoint as far as progress is concerned, wherever it ended up
 		self.origins[-1] = index
-
 		self.from_x, self.from_y = self.points[-1][0], self.points[-1][1]
 		self.cursor += 1
 
 	def entries(self):
-		"""The route as published, each point carrying the mission waypoint it is, or None for the
-		detour points in between. This is what progress is later counted back against, so it is built
-		here where the correspondence is still known rather than recovered from geometry afterwards."""
 		return [(x, y, z, origin) for (x, y, z), origin in zip(self.points, self.origins)]
 
 	def skip(self, index):
-		# The vessel's current position stays the anchor for the next leg, so the correction runs from
-		# where we are toward the next waypoint we can still reach
 		self.skipped.append(index)
 		self.cursor += 1
 
 class ObstacleMonitorNode:
-	"""Watches the route the active controller is following and offers a corrected one when it is
-	obstructed.
-
-	Two inputs with two distinct jobs. The mission is authoritative and is never overwritten by
-	anything published from here: every corridor, every geofence and every leg reference comes off it
-	alone, so a correction cannot walk the geofence off the survey line. The controller's plan is read
-	only to work out how much of the mission is already done, by matching its poses against mission
-	waypoints, which is the controller's own answer rather than an estimate of it."""
 
 	def __init__(self):
 		self.planning_frame = rospy.get_param("/planning_frame", "local")
@@ -113,7 +93,6 @@ class ObstacleMonitorNode:
 		self.divergence_param = self.params.get('divergence_param')
 		self.robot_width = self.params.get('robot_width')
 		self.max_detour = self.params.get('max_lateral_detour')
-		self.retry_seconds = self.params.get('retry_unreachable_waypoint_seconds')
 
 		self.mission = []
 		self.plan = []
@@ -152,10 +131,6 @@ class ObstacleMonitorNode:
 		rospy.loginfo("obstacle monitor: corridor radius %.0fm, clearance follows %s", self.max_detour, self.divergence_param)
 
 	def clearance(self):
-		"""How far the route must stay from an obstacle. This is the controller's allowed divergence
-		from its line, because the vessel may sit anywhere within that band under wind or current and
-		the corridor has to be clear wherever it ends up. The controller holds its hull inside the same
-		band by giving up half a robot width of it, so the margin is accounted for once and there."""
 		divergence = rospy.get_param(self.divergence_param, None)
 		if divergence is None:
 			rospy.logwarn_throttle(30.0, "obstacle monitor: %s is unset, falling back to robot_width" % self.divergence_param)
@@ -170,21 +145,6 @@ class ObstacleMonitorNode:
 		return bool(self.mission) and self.next_index < len(self.mission) and len(self.plan) >= 2
 
 	def geofence_polyline(self):
-		"""The polyline the geofence is built from, and the one drawn as the overlay. One method for both
-		so what is shown is what the search was actually held to.
-
-		The whole mission rather than the leg being solved. Per leg was the older answer and it kept the
-		tube tight around the survey line, but it tied the allowed area to a leg the search does not
-		necessarily start on: once a waypoint has been skipped or moved, a leg begins somewhere the
-		following leg's tube does not reach, and where the legs are longer than about two radii the
-		allowed area falls into two disconnected pieces with the vessel in the wrong one. The search then
-		fails on geometry alone, in open water, and it does so further into the mission the later it
-		happens, which is what truncated a mission at its first real obstruction.
-
-		Static instead: the area is the mission's own and does not shrink as the mission advances, so a
-		corner already turned still counts as somewhere the vessel may pass through. Legs stay goal
-		directed because each request carries its own start and goal; the geofence only says where the
-		vessel may be, never where it should go."""
 		return [(x, y) for x, y, _ in self.mission]
 
 	def mission_callback(self, msg):
@@ -197,8 +157,6 @@ class ObstacleMonitorNode:
 		self.next_index = 0
 		self.first_failed_at = {}
 
-		# The helm hands the controller this same path, so it is already the route in force rather
-		# than one waiting to be confirmed
 		self.adopt_route([(x, y, z, index) for index, (x, y, z) in enumerate(self.mission)])
 		self.published = []
 
@@ -222,8 +180,6 @@ class ObstacleMonitorNode:
 
 		self.plan = poses_to_xy(poses)
 
-		# What the planner watches for obstruction, which is the plan until we publish a correction and
-		# then the correction, because the controller's echo of it is a full round trip away
 		self.watched = list(self.plan)
 		self.publish_watch()
 
@@ -249,11 +205,6 @@ class ObstacleMonitorNode:
 		self.pending_route = None
 
 	def resolve_cursor(self):
-		"""Where the controller has got to in the route it was handed.
-
-		A revision is only the route in force once the controller has echoed it, which is a full round
-		trip away, so the one just published is tried first and adopted only when its own tail is what
-		comes back. Until then the previous route still explains what we are seeing."""
 		if self.pending_route is not None:
 			cursor = tail_cursor(self.pending_route, self.plan, ROUTE_MATCH)
 			if cursor is not None:
@@ -264,8 +215,6 @@ class ObstacleMonitorNode:
 		return tail_cursor(self.route, self.plan, ROUTE_MATCH)
 
 	def next_original(self, cursor):
-		"""The first original mission waypoint at or after the cursor. Detour points belong to no
-		waypoint, so they are passed over; every leg of a correction ends on one."""
 		for _, _, _, origin in self.route[cursor:]:
 			if origin is not None:
 				return origin
@@ -273,8 +222,6 @@ class ObstacleMonitorNode:
 		return len(self.mission)
 
 	def refresh(self):
-		"""Recomputes progress from how much of the published route the controller has left to run.
-		Nothing is remembered beyond the route itself, so there is nothing here to drift."""
 		cursor = self.resolve_cursor()
 
 		if cursor is None:
@@ -290,8 +237,6 @@ class ObstacleMonitorNode:
 		self.markers.publish(self.geofence_polyline(), self.severity())
 
 	def path_status_callback(self, msg):
-		"""The planner reports on the route rather than the monitor inspecting the map, so this is the
-		only place an intrusion is learned about."""
 		self.refresh()
 
 		if not msg.blocked:
@@ -317,8 +262,6 @@ class ObstacleMonitorNode:
 		if position is None:
 			return
 
-		# HOLD only when there is no usable correction on the wire. A first attempt against a fresh
-		# obstruction is usually answered in a fraction of a second, so easing off is enough.
 		severity = MonitorStatus.HOLD if self.state == STUCK else MonitorStatus.SLOW
 
 		self.walk = Correction(self.mission, self.next_index, position[0], position[1])
@@ -352,18 +295,12 @@ class ObstacleMonitorNode:
 		self.request_pub.publish(msg)
 
 	def check_timeout(self, _):
-		"""A planner that has died and one still thinking look identical from here, so an outstanding
-		request is given a bounded number of attempts and then the correction is dropped rather than
-		waiting on it forever."""
 		if not self.request.expired(rospy.Time.now()):
 			return
 
 		if self.request.exhausted():
 			rospy.logerr("obstacle monitor: planner did not answer request %d after %d attempts, dropping the correction", self.request.request_id, self.request.attempts)
 			self.abandon_walk()
-			# Never an ESTOP. That ends the mission and can leave the vessel somewhere it has to be
-			# fetched from, which is far worse than waiting: the walk is dropped, the next steady report
-			# starts a fresh one, and it keeps asking for as long as it takes.
 			self.report_stuck("Planner is not answering.")
 			return
 
@@ -384,70 +321,26 @@ class ObstacleMonitorNode:
 		self.request.close()
 
 		if msg.result in (PlanReply.INTERNAL_ERROR, PlanReply.NO_COSTMAP):
-			# Not an answer about the waypoint, so it must not count against one. Dropping the
-			# correction rather than retrying is deliberate: the next steady report comes in a second
-			# and starts a fresh attempt, where a retry would go straight back into the same fault.
-			rospy.logwarn("obstacle monitor: planner could not answer request %d (%s)", msg.request_id, self.reason_text(msg.result))
+			rospy.logwarn("obstacle monitor: planner could not answer request %d (%s)", msg.request_id, REASON_TEXT.get(msg.result, "unknown"))
 			self.abandon_walk()
-			self.report_stuck("Planner could not answer: %s." % self.reason_text(msg.result))
+			self.report_stuck("Planner could not answer: %s." % REASON_TEXT.get(msg.result, "unknown"))
 			return
 
-		# One pose is a legitimate answer, not a failure. It means the start and the goal quantised into
-		# the same cell, which happens when a blocked waypoint is moved back toward the vessel far enough
-		# to land on the end of the leg before it: the waypoint's nearest legal stand-in is somewhere the
-		# route already passes through, so there is nothing to travel and the leg is already satisfied.
-		# Demanding two left the reply falling through to the failure path, where OK has no name and the
-		# waypoint was reported unreachable for a reason of "unknown" before being skipped.
 		if msg.result == PlanReply.OK and msg.path:
 			self.first_failed_at.pop(index, None)
 			self.walk.accept([(p.x, p.y) for p in msg.path], index)
 			self.send_next()
 			return
 
-		reason = self.reason_text(msg.result)
-		if not self.give_up_on(index):
-			self.withhold(index, reason)
-			return
+		rospy.logwarn("obstacle monitor: waypoint %d unreachable (%s), routing to the next one", index, REASON_TEXT.get(msg.result, "unknown"))
 
-		rospy.logwarn("obstacle monitor: waypoint %d unreachable for %.0fs (%s), routing to the next one", index, self.retry_seconds, reason)
 		self.walk.skip(index)
 		self.send_next()
-
-	def give_up_on(self, index):
-		"""Whether this waypoint has been coming back unreachable for long enough to route around it.
-
-		Wall clock rather than an attempt count, because what usually resolves it is costmap decay
-		letting go of evidence, and that happens on its own schedule. The clock is per waypoint and
-		starts at its first failure; one successful plan to it clears the clock entirely, so a
-		waypoint that fails again later gets a full fresh window."""
-		first = self.first_failed_at.setdefault(index, rospy.Time.now())
-		return (rospy.Time.now() - first).to_sec() >= self.retry_seconds
-
-	def withhold(self, index, reason):
-		"""Nothing goes out on the wire while we are still confirming. A correction that has quietly
-		dropped a waypoint is worse than steering the old line slowly, and with nothing publishable
-		there is no corrected course to ease off along, so this is a hold."""
-		self.abandon_walk()
-		self.state = STUCK
-		self.publish_status(MonitorStatus.HOLD, "Waypoint %d unreachable (%s), retrying." % (index, reason))
-
-	def reason_text(self, result):
-		return {
-			PlanReply.GOAL_IN_OBSTACLE: "waypoint is inside an obstacle",
-			PlanReply.GOAL_OUTSIDE_CORRIDOR: "waypoint lies outside its own corridor",
-			PlanReply.START_TRAPPED: "no clear water around the vessel to start from",
-			PlanReply.NO_ROUTE: "no route within the corridor",
-			PlanReply.NO_COSTMAP: "no costmap yet",
-			PlanReply.INTERNAL_ERROR: "the planner failed internally",
-			PlanReply.OK: "ok",
-		}.get(result, "unknown")
 
 	def finish_walk(self):
 		walk = self.walk
 		self.abandon_walk()
 
-		# A correction ending at the last waypoint we could reach is still a safe course to steer.
-		# Only one too short to follow at all is worth nothing.
 		if walk is None or len(walk.points) < 2:
 			self.report_stuck("No usable corrected course through the remaining waypoints.")
 			return
@@ -455,11 +348,6 @@ class ObstacleMonitorNode:
 		self.publish_revision(walk)
 
 	def report_stuck(self, message):
-		"""We have nothing to offer. Reported as an observation and not as a command: HOLD says the
-		route ahead is obstructed and there is no way round it yet, which is for the helm to act on.
-
-		Deliberately open ended. A hold is held for as long as the water stays shut, because the map is
-		evidence that decays and an obstruction that is total now may not be in a minute."""
 		self.state = STUCK
 		self.publish_status(MonitorStatus.HOLD, message)
 
@@ -470,8 +358,6 @@ class ObstacleMonitorNode:
 		return all(math.hypot(a[0] - b[0], a[1] - b[1]) <= SAME_CORRECTION for a, b in zip(points, self.published))
 
 	def publish_revision(self, walk):
-		# Handing over a route the controller is already following makes it pick its place on it again
-		# and start the leg afresh, so an unchanged answer is worth nothing and costs the way on
 		if self.same_as_published(walk.points):
 			rospy.loginfo_throttle(5.0, "obstacle monitor: correction unchanged, leaving the route in force")
 			self.state = CORRECTING
@@ -481,13 +367,8 @@ class ObstacleMonitorNode:
 		self.published = list(walk.points)
 		self.path_pub.publish(make_path(self.planning_frame, walk.points))
 
-		# Held rather than adopted: progress still reads against the route in force until the
-		# controller confirms this one by echoing it
 		self.pending_route = walk.entries()
 
-		# Watch the correction from here rather than the route it replaces. The controller echoes its
-		# own version back once the helm has relayed it, but that is a full round trip away, and until
-		# then the planner would keep reporting the superseded route obstructed.
 		self.watched = [(x, y) for x, y, _ in walk.points]
 		self.publish_watch()
 
@@ -513,9 +394,7 @@ class ObstacleMonitorNode:
 		return self.last_status[0] if self.last_status else MonitorStatus.OK
 
 	def publish_status(self, status, message):
-		# The planner reports steadily rather than only on change, which is what keeps progress and the
-		# corridor overlay current, but it would otherwise have us restating an unchanged status to the
-		# helm every second. The topic is latched, so a late subscriber still gets the current state.
+
 		if (status, message) == self.last_status:
 			return
 
@@ -527,8 +406,6 @@ class ObstacleMonitorNode:
 		msg.message = message
 		self.status_pub.publish(msg)
 
-		# The overlay is redrawn before the status that follows from it is decided, so a change of
-		# severity has to reach back and recolour what is already on screen
 		if changed:
 			self.markers.recolour(status)
 

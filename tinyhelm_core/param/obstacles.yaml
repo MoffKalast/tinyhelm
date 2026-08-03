@@ -1,7 +1,7 @@
 tinyhelm_scan_to_reliable_cloud:
     frame: laser
 
-     # points used for new obstacle detections
+     # points used for new obstacles
     scan_topic: /scan_verified
     cloud_topic: /reliable_cloud
 
@@ -20,33 +20,26 @@ tinyhelm_obstacles:
     # Side of the local window in metres. Information leaves at the trailing edge as we move
     costmap_size: 150.0
 
+    # The window only follows the vessel once it has moved this many cells, so working back and forth over a boundary does not shed the trailing edge repeatedly.
+    scroll_hysteresis_cells: 5
+
     # Distance over which the soft standoff penalty falls away to nothing on the costmap
     soft_radius: 8.0
 
-    # Evidence is measured in seconds observed, not in hits. A cell earns at most one credit per
-    # confirm_period however many returns land in it, which is the only thing that separates a piling
-    # from a workboat crossing our bow: both put the same number of returns into a cell.
+    # Evidence is measured in seconds observed, not in hits. A cell earns at most one credit per confirm_period however many returns land in it.
     confirm_period: 0.2
 
     # How long something must be seen before it counts as an obstacle.
     confirm_seconds: 0.8
 
-    # Credit ceiling. This bounds how long anything survives after it stops being seen, so a brief
-    # smear clears quickly while a structure watched for minutes persists.
-    memory_seconds: 60.0
+    # Max total accumulated seconds per cell.
+    memory_seconds: 120.0
 
-    # Gap in observations tolerated before we start doubting a cell. Covers beam wander in swell and
-    # brief occlusion, so a structure glimpsed intermittently holds its evidence between sightings.
+    # Gap in observations tolerated before we start decaying a cell.
     grace_seconds: 3.0
 
-    # Seconds of silence needed to undo one second of observation. A ratio rather than seconds per
-    # credit, so shortening confirm_period for a faster reaction does not silently stretch how long
-    # anything survives after it stops being seen.
+    # Seconds of silence needed to undo one second of observation.
     forget_ratio: 2.0
-
-    # The window only follows the vessel once it has moved this many cells, so working back and forth
-    # over a boundary does not shed the trailing edge repeatedly.
-    scroll_hysteresis_cells: 5
 
     # Downsampling factor for the heuristic layer. Only ever used to estimate cost, 4 * 0.5 m = 2 m cells
     coarse_factor: 4
@@ -54,18 +47,14 @@ tinyhelm_obstacles:
     # How often an obstruction is restated while it persists.
     status_period: 1.0
 
-    # Full param path read from at runtime, has to point at the active controller. 
-    # This is the clearance a route must keep: the vessel may sit anywhere within its allowed divergence under wind or current, so the corridor has to be clear wherever it ends up.
+    # Full param path read from at runtime, has to point at the active controller. Defines the width of the corridor that must be kept clear.
     divergence_param: /tinyhelm_waypoints/max_line_divergence
 
     # Fallback option if divergence_param cannot be loaded
     robot_width: 1.0
 
-    # How far off its line the vessel may ever be routed. Flat on purpose: it also bounds the region a  search has to cover. 
+    # How far off its line the vessel is allowed to replan, forms a capsule around each leg of the mission.
     max_lateral_detour: 20.0
-
-    # Try to reach a waypoint for this amount of time before giving up and going to the next one if there is one, if not, end mission
-    retry_unreachable_waypoint_seconds: 30.0
 
     # A request left unanswered this long is resent, and dropped after this many retries.
     request_timeout: 2.0

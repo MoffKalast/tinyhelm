@@ -8,14 +8,10 @@ tinyhelm_core:
   enabled_topic: /tinyhelm/enabled    # Bool, enables or disables the entire navigation stack
   markers_topic: /tinyhelm/markers    # MarkerArray, aggregate of the active controller and all monitors
 
-  # Markers from every source are merged and republished on this tick. While disabled the display
-  # is wiped instead, at marker_clear_period so it does not spam.
   marker_rate: 10.0
   marker_clear_period: 5.0
 
-  # An automatic hold at the end of a plan only pins the last waypoint while the vessel is within
-  # the sum of these, otherwise the plan was truncated under us and it holds in place instead.
-  # Read live since both are reconfigurable. Operator holds are never gated by this.
+  # An automatic hold at the end of a plan only pins the last waypoint while the vessel is within the sum of these, otherwise the plan was truncated under us and it holds in place instead.
   hold_reach_params:
     - /tinyhelm_stationkeeping/max_divergence
     - /tinyhelm_waypoints/xy_distance_threshold

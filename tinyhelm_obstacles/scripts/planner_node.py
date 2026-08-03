@@ -10,15 +10,11 @@ import rospy
 from geometry_msgs.msg import Point
 from nav_msgs.msg import OccupancyGrid
 
-from coarse_heuristic import CoarseHeuristic
+from heuristic import CoarseHeuristic
 from cost_field import CostField, corridor_from_polyline, decode_distance, distance_quantum, nudge_goal
 from theta_star import GOAL_IN_OBSTACLE, GOAL_OUTSIDE_CORRIDOR, NO_ROUTE, OK, START_TRAPPED, UNREACHABLE_COARSE, ThetaStar, smooth_path
 from tinyhelm_obstacles.msg import PathStatus, PathWatch, PlanReply, PlanRequest
 
-# How finely a route is sampled against the field, in cells. Shared by the smoother and by the review
-# of the watched route on purpose. The two used to choose their own steps, and a smoother coarser than
-# the review would publish shortcuts the review then called obstructed: the correction was replanned to
-# the same geometry on every costmap, and the controller restarted on each one.
 ROUTE_SAMPLE_CELLS = 0.5
 
 RESULT_CODES = {
@@ -27,24 +23,10 @@ RESULT_CODES = {
 	GOAL_OUTSIDE_CORRIDOR: PlanReply.GOAL_OUTSIDE_CORRIDOR,
 	START_TRAPPED: PlanReply.START_TRAPPED,
 	NO_ROUTE: PlanReply.NO_ROUTE,
-	# Same answer on the wire: the caller can do nothing different about it, and the distinction is
-	# only worth having in the log line, where it names which of the two happened
 	UNREACHABLE_COARSE: PlanReply.NO_ROUTE,
 }
 
 class PlannerNode:
-	"""Answers one question: how do I get from here to there without hitting anything and without
-	leaving the corridor. It holds no mission, no progress and no policy, so there is nothing here to
-	go stale and nothing to reset.
-
-	A search takes long enough that several costmap updates will land during one. Rather than lock the
-	map for the duration, each request takes a snapshot of the latest field and plans against that,
-	which is both the cheapest and the most honest answer to "always use the newest data": a reply is
-	explicitly an answer about the map as it stood when the request arrived.
-
-	It also re-examines the route the monitor asked it to watch on every costmap update. That check
-	needs the distance field and nothing else, so doing it here keeps the monitor free of the grid
-	entirely."""
 
 	def __init__(self):
 		self.planning_frame = rospy.get_param("/planning_frame", "local")
@@ -88,9 +70,6 @@ class PlannerNode:
 
 	def adopt_costmap(self, msg):
 		values = np.asarray(msg.data, dtype=np.int8).reshape(msg.info.height, msg.info.width)
-
-		# The costmap publishes the distance field with no hard inflation baked in, so clearance is
-		# applied here and can follow the controller's reconfigurable divergence band
 		dist = decode_distance(values, 0.0, self.soft_radius)
 
 		with self.lock:
@@ -127,8 +106,6 @@ class PlannerNode:
 		return field
 
 	def review_watched(self):
-		"""Walks the watched route and reports the first place it is obstructed. Sampling at half the
-		grid resolution so a route cannot thread between samples past a cell it actually clips."""
 		with self.lock:
 			route = list(self.watched)
 			clearance = self.watch_clearance
@@ -154,8 +131,6 @@ class PlannerNode:
 
 		step = ROUTE_SAMPLE_CELLS * res
 
-		# A gap this far under the clearance is the encoding's own step rather than anything in the
-		# water, and reporting it would obstruct a route that was planned to sit exactly on the boundary
 		tolerance = distance_quantum(clearance, 0.0, self.soft_radius)
 
 		travelled = 0.0
@@ -223,10 +198,6 @@ class PlannerNode:
 	
 
 	def report(self, blocked, leg, distance, clearance):
-		# Reported on every change and otherwise at status_period, clear or not. The steady report is
-		# what the monitor advances its progress and redraws its corridor on, and it doubles as a
-		# heartbeat: a monitor that came up late still learns the state without the whole thing being
-		# restated at grid rate.
 		now = rospy.Time.now()
 		changed = blocked != self.last_blocked
 		if not changed and (now - self.last_status).to_sec() < self.status_period:
@@ -243,10 +214,6 @@ class PlannerNode:
 		self.status_pub.publish(msg)
 
 	def request_callback(self, msg):
-		"""Anything thrown in here would otherwise reach the monitor as silence, which it can only
-		resolve by waiting out a timeout and retrying the same request into the same fault. An answer
-		it can act on immediately is worth far more than a clean stack trace, so a failure is reported
-		as one."""
 		try:
 			self.solve(msg)
 		except Exception:
@@ -254,22 +221,6 @@ class PlannerNode:
 			self.publish_reply(msg.request_id, PlanReply.INTERNAL_ERROR, [], False, 0.0, 0)
 
 	def corridor_for(self, geofence, msg):
-		"""The area the vessel is permitted to be in: a tube of corridor_radius round the whole mission,
-		and nothing else.
-
-		There used to be a bubble of the same radius at wherever the leg began, so that a vessel pushed
-		off its line always had somewhere legal to start from. It was not worth what it cost. Anchored to
-		the vessel rather than to the mission, it granted fresh ground beyond the fence every time a
-		correction was planned, the route ran out into it, and the next correction began from out there
-		and granted more; against a long obstacle the vessel followed it out of the survey area a radius
-		at a time. Clamping the radius bounded that but never quite closed it, and the two definitions of
-		the allowed area then had to be kept in step in two places.
-
-		Nothing is needed in its place. The helm anchors every mission at the vessel's own position, so
-		the tube covers where the vessel is standing when the mission starts, and the controller holds it
-		within its line divergence thereafter. A vessel outside the fence is a vessel that has been
-		pushed out of its geofence, and refusing to plan is the honest answer to that. Widen
-		max_lateral_detour if the working area needs to be larger."""
 		if len(geofence) < 2:
 			return None
 
@@ -277,11 +228,6 @@ class PlannerNode:
 
 	def solve(self, msg):
 		corridor = self.corridor_for([(p.x, p.y) for p in msg.corridor], msg)
-
-		# The geofence says where the vessel may be; the divergence penalty says where it ought to be,
-		# and those are no longer the same polyline. Pulling toward the geofence would drag a path
-		# sideways onto whichever mission leg happened to be nearest, which on a survey pattern is the
-		# adjacent row. The line for this leg is the one it is actually running.
 		leg = [(msg.start.x, msg.start.y), (msg.goal.x, msg.goal.y)]
 
 		field = self.field_for(msg.clearance, corridor, leg, msg.corridor_radius)
@@ -292,17 +238,12 @@ class PlannerNode:
 
 		started = time.time()
 
-		# Before the heuristic rather than inside the search, so the coarse layer is built against the
-		# goal actually being aimed at. Half the corridor keeps the moved waypoint inside the tube it
-		# was allowed, and the reply carries it as the last pose of the path.
 		goal_x, goal_y = msg.goal.x, msg.goal.y
 		nudged = nudge_goal(field, goal_x, goal_y, msg.start.x, msg.start.y, 0.5 * msg.corridor_radius)
 		if nudged:
 			rospy.loginfo("planner: request %d goal was blocked, moved %.1fm to clear water", msg.request_id, math.hypot(nudged[0] - goal_x, nudged[1] - goal_y))
 			goal_x, goal_y = nudged
 
-			# Re-aimed at where the leg now ends. Only the centreline is rebuilt, so the geofence raster
-			# is not paid for twice.
 			field.adopt_centreline([(msg.start.x, msg.start.y), (goal_x, goal_y)], msg.corridor_radius)
 
 		heuristic = CoarseHeuristic(field, goal_x, goal_y, factor=self.coarse_factor)

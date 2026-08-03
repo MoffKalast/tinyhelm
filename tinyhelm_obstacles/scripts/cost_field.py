@@ -2,14 +2,7 @@ import math
 import numpy as np
 
 LETHAL = float("inf")
-
-# How much a path pays for hugging the inflation boundary, as a multiple of the distance travelled.
-# Not a parameter: above roughly this value the standoff a path settles at stops depending on it and
-# is set by soft_radius alone, so exposing it only offered a way to make things worse. Two also caps
-# the worst case segment cost at three times its length, which is what budget_factor already allows;
-# a larger weight buys detours that budget_factor then throws away as unplannable.
 SOFT_WEIGHT = 2.0
-
 DIVERGENCE_WEIGHT = 1.6
 
 def segment_distance(px, py, ax, ay, bx, by):
@@ -20,8 +13,6 @@ def segment_distance(px, py, ax, ay, bx, by):
 	return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
 
 class Capsule:
-	"""Line segment with a radius, used as one link of the corridor tube around the strategic legs.
-	distance() works on scalars and numpy arrays alike."""
 
 	def __init__(self, x1, y1, x2, y2, radius):
 		self.x1 = x1
@@ -45,8 +36,6 @@ class Capsule:
 		return self.distance(px, py) <= self.radius
 
 	def contains_point(self, px, py):
-		"""Scalar version. The array path goes through numpy for the rasteriser, which costs a couple
-		of microseconds a call and is not worth paying on a per sample test inside the search."""
 		dx = self.x2 - self.x1
 		dy = self.y2 - self.y1
 		len2 = dx * dx + dy * dy
@@ -61,20 +50,6 @@ def corridor_from_polyline(points, radius):
 	return [Capsule(points[i - 1][0], points[i - 1][1], points[i][0], points[i][1], radius) for i in range(1, len(points))]
 
 class CostField:
-	"""Snapshot of the obstacle grid window turned into planning costs.
-
-	A euclidean distance-to-obstacle field gives hard inflation (lethal within inflate_radius) and a
-	soft penalty that falls to nothing at soft_radius, so paths keep standoff where they can and
-	centre themselves between obstacles where they cannot. An optional corridor (union of capsules
-	around the strategic legs) marks everything outside the allowed tube unplannable as well.
-
-	Corridor violation is answerable on its own through outside_corridor_at, separately from the
-	combined verdict cost_at gives. They used to be the same predicate, which made a waypoint merely
-	outside its corridor indistinguishable from one sitting on a rock, and the caller would then
-	route past it as though it were occupied.
-
-	All world queries treat anything outside the field extent as free, which is what lets the
-	planner treat unseen space beyond the loaded window as clear."""
 
 	def __init__(self):
 		self.res = 1.0
@@ -91,18 +66,12 @@ class CostField:
 		self.divergence = None
 
 	def adopt(self, resolution, origin_x, origin_y, dist, inflate_radius, soft_radius, corridor, centreline=None, divergence_radius=0.0):
-		"""Takes a distance field computed elsewhere, which is how the planner consumes what the
-		costmap publishes. Inflation and the soft falloff are applied here rather than baked into the
-		grid, so the clearance can follow the controller's reconfigurable divergence band without the
-		costmap having to know anything about the vessel."""
 		self.res = resolution
 		self.origin_x = origin_x
 		self.origin_y = origin_y
 		self.size = dist.shape[0]
 		self.inflate = inflate_radius
 
-		# Keeping soft strictly above inflate leaves the falloff a non-zero span to work over, so
-		# the ramp needs no special case for a soft radius configured below the hard one
 		self.soft = max(soft_radius, inflate_radius + resolution)
 		self.dist = np.minimum(dist, self.soft)
 
@@ -110,18 +79,7 @@ class CostField:
 		self.adopt_centreline(centreline, divergence_radius)
 
 	def adopt_centreline(self, centreline, divergence_radius):
-		"""The line a path is meant to be running, kept as points rather than rasterised up front.
-		Nothing here knows the mission: the planner is stateless and is handed one leg per request, so
-		there is nothing long lived enough for precomputing to pay for. Cells are filled in as the
-		search touches them.
 
-		The cache cannot go stale. A field is built fresh from a locked snapshot for every request and
-		is discarded with it, so it never outlives the polyline and the distances it was filled from,
-		and there is no invalidation to get wrong.
-
-		Deliberately the polyline alone rather than the capsules the corridor is built from. That union
-		carries a disc at the vessel, and measuring deviation against the disc would read as zero
-		exactly where the pull back onto the line is most needed."""
 		self.centreline = list(centreline) if centreline and len(centreline) >= 2 else None
 		self.divergence_radius = divergence_radius
 
@@ -131,7 +89,6 @@ class CostField:
 			self.divergence = None
 
 	def rasterise_corridor(self, corridor):
-		# Kept alongside the raster so the corridor can still be answered for outside the window
 		self.corridor = corridor or None
 
 		if not corridor:
@@ -149,12 +106,10 @@ class CostField:
 			self.corridor_ok[y0:y1 + 1, x0:x1 + 1] |= capsule.contains(wx, wy)
 
 	def world_to_cell(self, x, y):
-		"""Returns (col, row) or None when outside the field."""
 		cx = math.floor((x - self.origin_x) / self.res)
 		cy = math.floor((y - self.origin_y) / self.res)
 		if cx < 0 or cy < 0 or cx >= self.size or cy >= self.size:
 			return None
-
 		return cx, cy
 
 	def cell_to_world(self, cx, cy):
@@ -166,10 +121,6 @@ class CostField:
 		return cx, cy
 
 	def soft_cost(self, distance):
-		"""Dimensionless penalty per metre travelled: one at the inflation boundary, nothing at
-		soft_radius, squared so the gradient bites hardest close in and barely perturbs the search
-		far out. Convex and symmetric, which is what makes a path centre itself in a gap regardless
-		of how the weight is set."""
 		if distance <= self.inflate:
 			return LETHAL
 		if distance >= self.soft:
@@ -182,11 +133,6 @@ class CostField:
 		return min(segment_distance(x, y, self.centreline[i - 1][0], self.centreline[i - 1][1], self.centreline[i][0], self.centreline[i][1]) for i in range(1, len(self.centreline)))
 
 	def divergence_cost(self, x, y):
-		"""Dimensionless penalty per metre travelled: nothing on the line, DIVERGENCE_WEIGHT at the
-		fence. Linear rather than squared, unlike the obstacle falloff, because a squared term goes
-		flat near the line: a path drifts most of the way back and then stops caring and wanders. A
-		constant gradient is what actually rejoins the course, and its steepness is what decides
-		whether the return is a lazy sweep or a hard cut back."""
 		if self.divergence is None:
 			return 0.0
 
@@ -207,9 +153,6 @@ class CostField:
 		if not self.corridor_ok[cy, cx]:
 			return LETHAL
 
-		# Added only once the cell is known to be passable. Lethality travels as a sentinel compared
-		# with equality all through the search, so adding anything to it would leave a value that is
-		# still infinite but no longer tests as lethal.
 		soft = self.soft_cost(self.dist[cy, cx])
 		if soft == LETHAL:
 			return LETHAL
@@ -227,9 +170,6 @@ class CostField:
 		if cell:
 			return self.cost_cell(*cell)
 
-		# Unseen space beyond the window counts as clear of obstacles, but the corridor still applies
-		# out there. It is anchored to the mission rather than to the map, and a search allowed to slip
-		# round the edge of the window would be left with no bound on it at all.
 		if not self.in_corridor(x, y):
 			return LETHAL
 
@@ -243,19 +183,10 @@ class CostField:
 		return not self.in_corridor(x, y)
 
 	def obstacle_distance_at(self, x, y):
-		"""Clamped at soft_radius inside the field; unseen space outside it reads as infinitely
-		clear, which is what keeps the planner from treating the window edge as a wall."""
 		cell = self.world_to_cell(x, y)
 		return self.dist[cell[1], cell[0]] if cell else LETHAL
 
 	def distance_gradient(self, x, y):
-		"""Unit vector up the distance field, or None where the field is flat.
-
-		Flat means the true interior of an obstacle: every sample reads zero, there is no nearest edge
-		encoded and so nothing to point at. In the inflated band around one, which is where a blocked
-		waypoint usually sits, the field is live and this is the normal off the obstacle, the shortest
-		way back into legal water. Also None next to the window edge, where a sample would read
-		infinitely clear and swamp the difference."""
 		east = self.obstacle_distance_at(x + self.res, y)
 		west = self.obstacle_distance_at(x - self.res, y)
 		north = self.obstacle_distance_at(x, y + self.res)
@@ -272,23 +203,9 @@ class CostField:
 		return float(dx / length), float(dy / length)
 
 def nudge_legal(field, x, y):
-	"""Whether a search may legally end here, with enough margin to survive being requantised.
-
-	Testing cost_at alone is not enough. The search builds its own grid with its own origin, so it
-	evaluates the cell centre nearest the goal rather than the goal itself, and that centre can fall in
-	a neighbouring cell of the field. A point moved to just outside the inflation then comes back lethal
-	to the very search it was handed to, and the leg is refused as though the waypoint were still buried
-	after having been moved to clear water. One cell of distance covers the offset."""
 	return field.cost_at(x, y) != LETHAL and field.obstacle_distance_at(x, y) > field.inflate + field.res
 
 def nudge_direction(field, gx, gy, toward_x, toward_y):
-	"""Which way to move a blocked waypoint.
-
-	Toward the vessel by default: that water is where we already are, so it is both close and known to
-	be clear, and it puts the waypoint on the near side of whatever blocked it rather than beyond it.
-	The distance field's gradient is a better answer where it exists, since it is the normal off the
-	obstacle and therefore the shortest way out, but only when it leads the same way as the vessel: out
-	the far side is just as legal and no use to us."""
 	vx = toward_x - gx
 	vy = toward_y - gy
 	length = math.hypot(vx, vy)
@@ -305,9 +222,6 @@ def nudge_direction(field, gx, gy, toward_x, toward_y):
 	return gradient
 
 def nudge_nearest(field, gx, gy, toward_x, toward_y, max_distance):
-	"""Nearest legal point when the chosen direction is walled off the whole way out. Rings outward a
-	cell at a time and takes whichever candidate on the first ring to offer one lies closest to the
-	vessel, so the waypoint still lands on the near side."""
 	cell = field.world_to_cell(gx, gy)
 	if cell is None:
 		return None
@@ -335,17 +249,6 @@ def nudge_nearest(field, gx, gy, toward_x, toward_y, max_distance):
 	return None
 
 def nudge_goal(field, gx, gy, toward_x, toward_y, max_distance):
-	"""Moves a waypoint that no search could legally end on to the closest place one can, or None when
-	it is already legal or nothing within max_distance is.
-
-	A waypoint inside an obstacle used to fail the whole leg, and the caller could then only wait for
-	the evidence under it to decay. Moving it is the honest answer instead: the mission wanted the
-	vessel at that spot and the nearest water to it is the closest we can come to obeying that.
-
-	Bounded because a waypoint that has to travel far is no longer the waypoint that was asked for. The
-	caller sets the bound from the corridor it allowed, so the result is always inside the corridor and
-	the leg after it still begins inside its own; legality against obstacles, clearance and the corridor
-	alike all come from the same field query the search itself uses."""
 	if field.cost_at(gx, gy) != LETHAL:
 		return None
 
@@ -360,27 +263,15 @@ def nudge_goal(field, gx, gy, toward_x, toward_y, max_distance):
 
 	return nudge_nearest(field, gx, gy, toward_x, toward_y, max_distance)
 
-# Published as a spec nav_msgs/OccupancyGrid so it renders in rviz as an ordinary costmap and needs
-# no message of its own. The costmap_2d convention: 100 is definitely occupied, 0 is free. Unknown
-# (-1) is never emitted, because unseen space is deliberately treated as clear.
 COST_LETHAL = 100
 
 def encode_cost(dist, inflate_radius, soft_radius):
-	"""Clamped distance field to publishable 0..100 costs. Quantisation is finest close in, where
-	the quadratic is steep and the cost actually matters, and coarsest out near soft_radius where the
-	cost is nearly nothing either way."""
 	soft = max(soft_radius, inflate_radius + 1e-6)
 	shortfall = np.clip((soft - dist) / (soft - inflate_radius), 0.0, 1.0)
 	graded = np.rint(shortfall * shortfall * (COST_LETHAL - 1))
 	return np.where(dist <= inflate_radius, COST_LETHAL, graded).astype(np.int8)
 
 def distance_quantum(distance, inflate_radius, soft_radius):
-	"""Width of one representable step of the decoded field at the given distance.
-
-	The encoding is quadratic, so steps are finest close in, where the cost matters, and coarsest out
-	near soft_radius. Anything comparing a decoded distance against a threshold has to allow for it: a
-	route planned to sit right on a clearance boundary can read a quantum under it, and calling that an
-	obstruction reports a property of the encoding as though it were something in the water."""
 	soft = max(soft_radius, inflate_radius + 1e-6)
 	span = soft - inflate_radius
 	shortfall = min(1.0, max(0.0, (soft - distance) / span))
@@ -390,17 +281,11 @@ def distance_quantum(distance, inflate_radius, soft_radius):
 	return span / (2.0 * shortfall * (COST_LETHAL - 1))
 
 def decode_distance(values, inflate_radius, soft_radius):
-	"""Inverse of encode_cost. Kept adjacent to it deliberately: the two have to agree exactly, and a
-	round trip test over the pair catches a disagreement that would otherwise surface as a planner
-	that quietly believes obstacles are somewhere they are not."""
 	soft = max(soft_radius, inflate_radius + 1e-6)
 	graded = np.asarray(values, dtype=np.float64)
 	shortfall = np.sqrt(np.clip(graded / (COST_LETHAL - 1), 0.0, 1.0))
 	distance = soft - shortfall * (soft - inflate_radius)
 
-	# Lethality travels as its own symbol, so decoding must never manufacture it: a graded cell that
-	# lands exactly on the inflation boundary would come back lethal and quietly eat the margin the
-	# corridor check relies on. Half a quantum of bias keeps every graded value strictly outside.
 	margin = 0.5 * (soft - inflate_radius) / (COST_LETHAL - 1)
 	distance = np.maximum(distance, inflate_radius + margin)
 

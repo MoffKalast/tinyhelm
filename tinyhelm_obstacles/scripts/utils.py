@@ -16,9 +16,6 @@ def robot_position(buffer, planning_frame, robot_frame):
 		return None
 
 def path_to_planning_frame(buffer, msg, planning_frame):
-	"""Returns the poses in the planning frame, or None when a stated frame cannot be resolved.
-	Everything downstream assumes the planning frame, and untransformed coordinates would have us
-	monitoring somewhere else entirely without saying so."""
 	frame = msg.header.frame_id
 	if not frame or frame == planning_frame or not msg.poses:
 		return list(msg.poses)
@@ -61,20 +58,6 @@ def segment_distance(px, py, ax, ay, bx, by):
 	return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
 
 def tail_cursor(route, plan, tolerance):
-	"""Index into route of the point the controller is heading to, or None when the plan cannot be a
-	tail of that route.
-
-	The controller publishes the anchor of the leg in progress followed by everything it still has to
-	visit, so what remains is always a tail of the route it was handed and its length alone says where
-	we are. Position cannot say: a loitering mission runs the same coordinates twice by construction,
-	and a position on one is a position on both.
-
-	Counting from the end also survives the helm trimming stale legs off the front of a revision
-	before relaying it, since a tail of a tail is still a tail of the same route.
-
-	plan[0] is the leg anchor and is already behind us, so only the length after it counts. The
-	coordinate check is a desync alarm rather than the mechanism: nothing is inferred from it, and a
-	miss is reported instead of guessed around."""
 	if len(route) < 1:
 		return None
 
@@ -89,8 +72,6 @@ def tail_cursor(route, plan, tolerance):
 	return cursor
 
 class PendingRequest:
-	"""Bookkeeping for one outstanding planner request. Holds no publisher and calls nothing back:
-	the monitor owns the timer and does the publishing."""
 
 	def __init__(self, timeout, retries):
 		self.timeout = timeout

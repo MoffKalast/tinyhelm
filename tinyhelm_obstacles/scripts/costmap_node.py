@@ -13,19 +13,6 @@ from cost_field import encode_cost
 from local_grid import LocalGrid
 
 class CostmapNode:
-	"""Owns everything to do with obstacle evidence: the clouds, the rolling window, decay, and the
-	distance field. Publishes that field as a plain nav_msgs/OccupancyGrid carrying cost on
-	the usual convention, so it needs no message of its own and renders in rviz as an ordinary
-	costmap.
-
-	Ingestion happens on the subscriber threads because it is bounded and per message. Maintenance
-	and publishing happen on one timer, so decay keeps running and the map keeps fading even if the
-	sensors go quiet, which is exactly when a stale map is most dangerous.
-
-	All of that is gated on the helm's enabled topic. While disabled the cloud subscriptions are
-	dropped and the maintenance timer is stopped, which also stops the costmap publication the
-	planner keys off, and the map is cleared so re-enabling starts from no evidence rather than
-	from whatever was true however long ago."""
 
 	def __init__(self):
 		self.planning_frame = rospy.get_param("/planning_frame", "local") 
