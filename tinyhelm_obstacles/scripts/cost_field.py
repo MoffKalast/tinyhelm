@@ -1,16 +1,17 @@
 import math
 import numpy as np
 
+from utils import segment_distance
+
 LETHAL = float("inf")
 SOFT_WEIGHT = 2.0
 DIVERGENCE_WEIGHT = 1.6
 
-def segment_distance(px, py, ax, ay, bx, by):
-	dx = bx - ax
-	dy = by - ay
-	len2 = dx * dx + dy * dy
-	t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / len2)) if len2 > 0.0 else 0.0
-	return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+def shortfall(distance, inflate_radius, soft_radius):
+	return (soft_radius - distance) / (soft_radius - inflate_radius)
+
+def soft_penalty(shortfall_value):
+	return SOFT_WEIGHT * shortfall_value * shortfall_value
 
 class Capsule:
 
@@ -22,27 +23,10 @@ class Capsule:
 		self.radius = radius
 
 	def distance(self, px, py):
-		dx = self.x2 - self.x1
-		dy = self.y2 - self.y1
-		len2 = dx * dx + dy * dy
-		if len2 > 0.0:
-			t = np.clip(((px - self.x1) * dx + (py - self.y1) * dy) / len2, 0.0, 1.0)
-		else:
-			t = 0.0
-
-		return np.hypot(px - (self.x1 + t * dx), py - (self.y1 + t * dy))
+		return segment_distance(px, py, self.x1, self.y1, self.x2, self.y2)
 
 	def contains(self, px, py):
 		return self.distance(px, py) <= self.radius
-
-	def contains_point(self, px, py):
-		dx = self.x2 - self.x1
-		dy = self.y2 - self.y1
-		len2 = dx * dx + dy * dy
-		t = max(0.0, min(1.0, ((px - self.x1) * dx + (py - self.y1) * dy) / len2)) if len2 > 0.0 else 0.0
-		ox = px - (self.x1 + t * dx)
-		oy = py - (self.y1 + t * dy)
-		return ox * ox + oy * oy <= self.radius * self.radius
 
 def corridor_from_polyline(points, radius):
 	"""One capsule per leg of the polyline. Both the planner and the marker overlay derive the tube
@@ -126,8 +110,7 @@ class CostField:
 		if distance >= self.soft:
 			return 0.0
 
-		shortfall = (self.soft - distance) / (self.soft - self.inflate)
-		return SOFT_WEIGHT * shortfall * shortfall
+		return soft_penalty(shortfall(distance, self.inflate, self.soft))
 
 	def deviation_at(self, x, y):
 		return min(segment_distance(x, y, self.centreline[i - 1][0], self.centreline[i - 1][1], self.centreline[i][0], self.centreline[i][1]) for i in range(1, len(self.centreline)))
@@ -163,7 +146,7 @@ class CostField:
 		if not self.corridor:
 			return True
 
-		return any(capsule.contains_point(x, y) for capsule in self.corridor)
+		return any(capsule.contains(x, y) for capsule in self.corridor)
 
 	def cost_at(self, x, y):
 		cell = self.world_to_cell(x, y)
@@ -265,28 +248,26 @@ def nudge_goal(field, gx, gy, toward_x, toward_y, max_distance):
 
 COST_LETHAL = 100
 
-def encode_cost(dist, inflate_radius, soft_radius):
-	soft = max(soft_radius, inflate_radius + 1e-6)
-	shortfall = np.clip((soft - dist) / (soft - inflate_radius), 0.0, 1.0)
-	graded = np.rint(shortfall * shortfall * (COST_LETHAL - 1))
-	return np.where(dist <= inflate_radius, COST_LETHAL, graded).astype(np.int8)
+def encode_cost(dist, soft_radius):
+	soft = max(soft_radius, 1e-6)
+	graded = np.clip(shortfall(dist, 0.0, soft), 0.0, 1.0)
+	return np.where(dist <= 0.0, COST_LETHAL, np.rint(graded * graded * (COST_LETHAL - 1))).astype(np.int8)
 
-def distance_quantum(distance, inflate_radius, soft_radius):
-	soft = max(soft_radius, inflate_radius + 1e-6)
-	span = soft - inflate_radius
-	shortfall = min(1.0, max(0.0, (soft - distance) / span))
-	if shortfall <= 0.0:
-		return span
+def distance_quantum(distance, soft_radius):
+	soft = max(soft_radius, 1e-6)
+	graded = min(1.0, max(0.0, shortfall(distance, 0.0, soft)))
+	if graded <= 0.0:
+		return soft
 
-	return span / (2.0 * shortfall * (COST_LETHAL - 1))
+	return soft / (2.0 * graded * (COST_LETHAL - 1))
 
-def decode_distance(values, inflate_radius, soft_radius):
-	soft = max(soft_radius, inflate_radius + 1e-6)
+def decode_distance(values, soft_radius):
+	soft = max(soft_radius, 1e-6)
 	graded = np.asarray(values, dtype=np.float64)
-	shortfall = np.sqrt(np.clip(graded / (COST_LETHAL - 1), 0.0, 1.0))
-	distance = soft - shortfall * (soft - inflate_radius)
+	recovered = np.sqrt(np.clip(graded / (COST_LETHAL - 1), 0.0, 1.0))
+	distance = soft - recovered * soft
 
-	margin = 0.5 * (soft - inflate_radius) / (COST_LETHAL - 1)
-	distance = np.maximum(distance, inflate_radius + margin)
+	margin = 0.5 * soft / (COST_LETHAL - 1)
+	distance = np.maximum(distance, margin)
 
 	return np.where(graded >= COST_LETHAL, 0.0, distance)

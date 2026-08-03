@@ -2,9 +2,7 @@ import math
 import heapq
 
 from cost_field import LETHAL
-from heuristic import EuclideanHeuristic
-
-NEIGHBOURS = ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1))
+from utils import NEIGHBOURS
 
 OK = "ok"
 GOAL_IN_OBSTACLE = "goal_in_obstacle"
@@ -59,7 +57,7 @@ def smooth_path(field, points, step):
 			stretch = LETHAL if cumulative[i] == LETHAL else cumulative[j] - cumulative[i]
 			if direct < LETHAL and direct <= stretch + 1e-9:
 				break
-			
+
 			j -= 1
 
 		out.append(points[j])
@@ -143,8 +141,6 @@ class SearchGrid:
 						return candidate
 		return None
 
-
-
 class ThetaStar:
 
 	def __init__(self, nudge_radius=8):
@@ -154,14 +150,12 @@ class ThetaStar:
 		self.reason = OK
 		self.start_nudged = False
 
-	def plan(self, field, sx, sy, gx, gy, margin, heuristic=None):
+	def plan(self, field, sx, sy, gx, gy, margin, heuristic):
 		self.last_expansions = 0
 		self.reason = OK
 		self.start_nudged = False
 
 		grid = SearchGrid(field, sx, sy, gx, gy, margin)
-		if heuristic is None:
-			heuristic = EuclideanHeuristic(gx, gy)
 
 		start = grid.to_cell(sx, sy)
 		goal = grid.to_cell(gx, gy)
@@ -188,7 +182,7 @@ class ThetaStar:
 			self.reason = NO_ROUTE
 			return []
 
-		return self.reconstruct(grid, came_from, start, goal, sx, sy, gx, gy)
+		return self.reconstruct(grid, came_from, goal, sx, sy, gx, gy)
 
 	def search(self, grid, start, goal, heuristic):
 		g = {start: 0.0}
@@ -243,7 +237,7 @@ class ThetaStar:
 		self.last_expansions = expansions
 		return None
 
-	def reconstruct(self, grid, parent, start, goal, sx, sy, gx, gy):
+	def reconstruct(self, grid, parent, goal, sx, sy, gx, gy):
 		points = []
 		current = goal
 		while True:

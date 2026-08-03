@@ -2,19 +2,10 @@ import math
 import heapq
 import numpy as np
 
-from cost_field import SOFT_WEIGHT
+from cost_field import shortfall, soft_penalty
+from utils import NEIGHBOURS
 
-NEIGHBOURS = ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1))
 OCTILE_OVERSHOOT = 1.0 + math.sqrt(2.0) - 2.0 / math.sqrt(2.0) + 1e-9
-
-class EuclideanHeuristic:
-
-	def __init__(self, gx, gy):
-		self.gx = gx
-		self.gy = gy
-
-	def estimate(self, x, y):
-		return math.hypot(self.gx - x, self.gy - y)
 
 class CoarseHeuristic:
 
@@ -43,8 +34,8 @@ class CoarseHeuristic:
 		blocks = occupied[:usable, :usable].reshape(n, self.factor, n, self.factor)
 		blocked = blocks.all(axis=(1, 3))
 
-		shortfall = np.clip((field.soft - field.dist[:usable, :usable]) / (field.soft - field.inflate), 0.0, 1.0)
-		penalty = np.where(occupied[:usable, :usable], np.inf, SOFT_WEIGHT * shortfall * shortfall)
+		graded = np.clip(shortfall(field.dist[:usable, :usable], field.inflate, field.soft), 0.0, 1.0)
+		penalty = np.where(occupied[:usable, :usable], np.inf, soft_penalty(graded))
 		soft = penalty.reshape(n, self.factor, n, self.factor).min(axis=(1, 3))
 
 		inside = field.corridor_ok[:usable, :usable].reshape(n, self.factor, n, self.factor).any(axis=(1, 3))

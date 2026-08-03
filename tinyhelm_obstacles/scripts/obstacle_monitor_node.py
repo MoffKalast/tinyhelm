@@ -105,7 +105,6 @@ class ObstacleMonitorNode:
 		self.walk = None
 		self.request_id = 0
 		self.request = PendingRequest(self.params.get('request_timeout'), self.params.get('request_retries'))
-		self.first_failed_at = {}
 		self.last_status = None
 
 		self.markers = DebugMarkers(self.planning_frame, self.max_detour)
@@ -155,7 +154,6 @@ class ObstacleMonitorNode:
 		self.abandon_walk()
 		self.mission = poses_to_xyz(poses)
 		self.next_index = 0
-		self.first_failed_at = {}
 
 		self.adopt_route([(x, y, z, index) for index, (x, y, z) in enumerate(self.mission)])
 		self.published = []
@@ -327,7 +325,6 @@ class ObstacleMonitorNode:
 			return
 
 		if msg.result == PlanReply.OK and msg.path:
-			self.first_failed_at.pop(index, None)
 			self.walk.accept([(p.x, p.y) for p in msg.path], index)
 			self.send_next()
 			return

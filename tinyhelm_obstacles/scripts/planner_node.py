@@ -70,7 +70,7 @@ class PlannerNode:
 
 	def adopt_costmap(self, msg):
 		values = np.asarray(msg.data, dtype=np.int8).reshape(msg.info.height, msg.info.width)
-		dist = decode_distance(values, 0.0, self.soft_radius)
+		dist = decode_distance(values, self.soft_radius)
 
 		with self.lock:
 			self.dist = dist
@@ -109,14 +109,6 @@ class PlannerNode:
 		with self.lock:
 			route = list(self.watched)
 			clearance = self.watch_clearance
-			if self.dist is not None:
-				# Store local references to avoid lock overhead in loop
-				dist_grid = self.dist
-				grid_rows, grid_cols = dist_grid.shape
-				origin_x, origin_y = self.origin
-				res = self.res
-			else:
-				dist_grid = None
 
 		if len(route) < 2:
 			return
@@ -129,60 +121,24 @@ class PlannerNode:
 		if field is None:
 			return
 
-		step = ROUTE_SAMPLE_CELLS * res
-
-		tolerance = distance_quantum(clearance, 0.0, self.soft_radius)
+		step = ROUTE_SAMPLE_CELLS * field.res
+		tolerance = distance_quantum(clearance, self.soft_radius)
+		pad_cells = int(clearance / field.res) + 1
 
 		travelled = 0.0
 		worst = float("inf")
 		blocked_leg = -1
 		blocked_at = 0.0
 
-		# Pre-calculate clearance padding in grid cells for the bounding box check
-		pad_cells = int(clearance / res) + 1 if res > 0 else 0
-
 		for leg in range(1, len(route)):
 			ax, ay = route[leg - 1]
 			bx, by = route[leg]
-			length = ((bx - ax) ** 2 + (by - ay) ** 2) ** 0.5
-			
-			# Broad-Phase Bounding Box Check 
-			needs_detailed_sampling = True
-			
-			if dist_grid is not None:
-				# Find bounding box in world coordinates
-				min_x, max_x = min(ax, bx), max(ax, bx)
-				min_y, max_y = min(ay, by), max(ay, by)
-				
-				# Convert to grid coordinates with clearance padding
-				min_col = int((min_x - origin_x) / res) - pad_cells
-				max_col = int((max_x - origin_x) / res) + pad_cells + 1
-				min_row = int((min_y - origin_y) / res) - pad_cells
-				max_row = int((max_y - origin_y) / res) + pad_cells + 1
-				
-				# A) Outside costmap check: if the padded box is completely outside the grid,
-				# we can skip detailed sampling because unseen space is clear.
-				if max_col < 0 or min_col >= grid_cols or max_row < 0 or min_row >= grid_rows:
-					# Entirely outside the known costmap: unseen space reads as infinitely clear,
-					# capped at the soft radius so the reported worst clearance still means something.
-					needs_detailed_sampling = False
-					worst = min(worst, self.soft_radius)
-				else:
-					# B) Clear costmap check: clamp to grid bounds and check the subarray
-					min_col_c = max(0, min_col)
-					max_col_c = min(grid_cols, max_col)
-					min_row_c = max(0, min_row)
-					max_row_c = min(grid_rows, max_row)
-					
-					sub_grid = dist_grid[min_row_c:max_row_c, min_col_c:max_col_c]
-					
-					# If the minimum distance in this bounding box is strictly greater than clearance, the entire line segment is guaranteed safe. The box minimum is still a valid bound on the worst clearance actually seen along the segment.
-					if sub_grid.size > 0 and np.min(sub_grid) >= clearance:
-						needs_detailed_sampling = False
-						worst = min(worst, np.min(sub_grid), self.soft_radius)
+			length = math.hypot(bx - ax, by - ay)
 
-			# Narrow-Phase Point-by-Point Check
-			if needs_detailed_sampling:
+			bound = self.leg_clearance_bound(field, ax, ay, bx, by, pad_cells)
+			if bound is not None and bound >= clearance:
+				worst = min(worst, bound, self.soft_radius)
+			else:
 				samples = max(1, int(length / step))
 				for s in range(samples + 1):
 					t = s / samples
@@ -191,11 +147,27 @@ class PlannerNode:
 					if blocked_leg < 0 and gap < clearance - tolerance:
 						blocked_leg = leg
 						blocked_at = travelled + t * length
-			
+
 			travelled += length
 
 		self.report(blocked_leg >= 0, blocked_leg, blocked_at, worst)
-	
+
+	def leg_clearance_bound(self, field, ax, ay, bx, by, pad_cells):
+		rows, cols = field.dist.shape
+
+		col0 = int((min(ax, bx) - field.origin_x) / field.res) - pad_cells
+		col1 = int((max(ax, bx) - field.origin_x) / field.res) + pad_cells + 1
+		row0 = int((min(ay, by) - field.origin_y) / field.res) - pad_cells
+		row1 = int((max(ay, by) - field.origin_y) / field.res) + pad_cells + 1
+
+		if col1 < 0 or col0 >= cols or row1 < 0 or row0 >= rows:
+			return float("inf")
+
+		window = field.dist[max(0, row0):min(rows, row1), max(0, col0):min(cols, col1)]
+		if window.size == 0:
+			return None
+
+		return float(window.min())
 
 	def report(self, blocked, leg, distance, clearance):
 		now = rospy.Time.now()

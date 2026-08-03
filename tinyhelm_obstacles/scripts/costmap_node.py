@@ -11,6 +11,7 @@ from std_msgs.msg import Bool, Empty
 from cloud import cloud_xy
 from cost_field import encode_cost
 from local_grid import LocalGrid
+from utils import robot_position
 
 class CostmapNode:
 
@@ -91,14 +92,13 @@ class CostmapNode:
 			self.publish(snapshot, origin_x, origin_y)
 			rospy.loginfo("Costmap disabled")
 
-	def robot_position(self):
+	def wait_for_position(self):
 		while not rospy.is_shutdown() and self.enabled:
-			try:
-				tf = self.tf_buffer.lookup_transform(self.planning_frame, self.robot_frame, rospy.Time(0))
-				return tf.transform.translation.x, tf.transform.translation.y
-			except tf2_ros.TransformException as e:
-				rospy.logwarn_throttle(5.0, "costmap: waiting for %s -> %s: %s" % (self.planning_frame, self.robot_frame, e))
-				rospy.sleep(0.2)
+			position = robot_position(self.tf_buffer, self.planning_frame, self.robot_frame)
+			if position is not None:
+				return position
+
+			rospy.sleep(0.2)
 
 		return None
 
@@ -140,7 +140,7 @@ class CostmapNode:
 		rospy.loginfo("costmap: cleared by request")
 
 	def maintain(self, _):
-		position = self.robot_position()
+		position = self.wait_for_position()
 		if position is None:
 			return
 
@@ -168,7 +168,7 @@ class CostmapNode:
 		msg.info.origin.position.x = origin_x
 		msg.info.origin.position.y = origin_y
 		msg.info.origin.orientation.w = 1.0
-		msg.data = encode_cost(dist, 0.0, self.soft_radius).ravel().tolist()
+		msg.data = encode_cost(dist, self.soft_radius).ravel().tolist()
 		self.grid_pub.publish(msg)
 
 if __name__ == "__main__":

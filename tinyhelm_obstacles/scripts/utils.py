@@ -1,11 +1,14 @@
 import math
 
+import numpy as np
 import rospy
 import tf2_geometry_msgs
 import tf2_ros
 
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
+
+NEIGHBOURS = ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1))
 
 def robot_position(buffer, planning_frame, robot_frame):
 	try:
@@ -54,8 +57,8 @@ def segment_distance(px, py, ax, ay, bx, by):
 	dx = bx - ax
 	dy = by - ay
 	len2 = dx * dx + dy * dy
-	t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / len2)) if len2 > 0.0 else 0.0
-	return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+	t = np.clip(((px - ax) * dx + (py - ay) * dy) / len2, 0.0, 1.0) if len2 > 0.0 else 0.0
+	return np.hypot(px - (ax + t * dx), py - (ay + t * dy))
 
 def tail_cursor(route, plan, tolerance):
 	if len(route) < 1:

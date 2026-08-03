@@ -2,7 +2,6 @@
 import rospy
 
 from shapely.geometry import LineString
-from shapely.ops import unary_union
 
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point
@@ -26,13 +25,12 @@ class DebugMarkers:
 		self.segments = []
 
 	def corridor_silhouette(self, polyline):
-		union = unary_union([LineString(polyline).buffer(self.max_detour, resolution=8)])
+		tube = LineString(polyline).buffer(self.max_detour, resolution=8)
 
 		segments = []
-		for geom in getattr(union, "geoms", (union,)):
-			for ring in [geom.exterior] + list(geom.interiors):
-				coords = list(ring.coords)
-				segments.extend((coords[i - 1], coords[i]) for i in range(1, len(coords)))
+		for ring in [tube.exterior] + list(tube.interiors):
+			coords = list(ring.coords)
+			segments.extend((coords[i - 1], coords[i]) for i in range(1, len(coords)))
 
 		return segments
 
