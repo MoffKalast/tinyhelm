@@ -292,7 +292,24 @@ class ThetaStar:
 
 		return points
 
-def smooth_path(field, points, step, extent):
+def merge_collinear(points, tolerance):
+	if len(points) <= 2:
+		return list(points)
+
+	out = [points[0]]
+	for i in range(1, len(points) - 1):
+		ax, ay = out[-1]
+		bx, by = points[i]
+		cx, cy = points[i + 1]
+		span = math.hypot(cx - ax, cy - ay)
+		cross = abs((bx - ax) * (cy - ay) - (by - ay) * (cx - ax))
+		if span <= 0.0 or cross > tolerance * span:
+			out.append(points[i])
+
+	out.append(points[-1])
+	return out
+
+def smooth_path(field, points, step, extent, max_link):
 	#String pulling that respects the cost field. A shortcut is taken only when it is no more expensive than the stretch it replaces
 	if len(points) <= 2:
 		return list(points)
@@ -322,7 +339,11 @@ def smooth_path(field, points, step, extent):
 	out = [points[0]]
 	i = 0
 	while i < len(points) - 1:
-		j = len(points) - 1
+		limit = i + 1
+		while limit + 1 < len(points) and math.hypot(points[limit + 1][0] - points[i][0], points[limit + 1][1] - points[i][1]) <= max_link:
+			limit += 1
+
+		j = limit
 		while j > i + 1:
 			direct = integrated_cost(points[i][0], points[i][1], points[j][0], points[j][1])
 			stretch = LETHAL if cumulative[i] == LETHAL else cumulative[j] - cumulative[i]
@@ -334,4 +355,4 @@ def smooth_path(field, points, step, extent):
 		out.append(points[j])
 		i = j
 
-	return out
+	return merge_collinear(out, 0.5 * field.res)
