@@ -171,6 +171,13 @@ class CostField:
 
 		return self.divergence_cost(x, y)
 
+	def clear_at(self, x, y):
+		cell = self.world_to_cell(x, y)
+		if cell is None:
+			return self.in_corridor(x, y)
+
+		return bool(self.corridor_ok[cell[1], cell[0]]) and self.dist[cell[1], cell[0]] >= self.soft
+
 	def outside_corridor_at(self, x, y):
 		cell = self.world_to_cell(x, y)
 		if cell:

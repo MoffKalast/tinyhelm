@@ -209,6 +209,9 @@ class ThetaStar:
 		if not segment_hits_box(sx, sy, gx, gy, *extent):
 			return [grid.to_world(start) if self.start_nudged else (sx, sy), (gx, gy)]
 
+		if not self.start_nudged and self.direct_is_clear(field, sx, sy, gx, gy):
+			return [(sx, sy), (gx, gy)]
+
 		start_x, start_y = grid.to_world(start)
 		heuristic = CoarseHeuristic(field, gx, gy, self.coarse_factor)
 		if heuristic.estimate(start_x, start_y) == LETHAL:
@@ -221,6 +224,17 @@ class ThetaStar:
 			return []
 
 		return self.reconstruct(grid, came_from, goal, sx, sy, gx, gy)
+
+	def direct_is_clear(self, field, ax, ay, bx, by):
+		step = max(field.res, field.inflate)
+		samples = max(1, int(math.ceil(math.hypot(bx - ax, by - ay) / step)))
+
+		for i in range(samples + 1):
+			t = i / samples
+			if not field.clear_at(ax + t * (bx - ax), ay + t * (by - ay)):
+				return False
+
+		return True
 
 	def search(self, grid, start, goal, heuristic):
 		g = {start: 0.0}
