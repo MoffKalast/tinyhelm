@@ -33,7 +33,7 @@ REASON_TEXT = {
 
 class Correction:
 
-	def __init__(self, mission, first_index, rx, ry):
+	def __init__(self, mission, first_index, rx, ry, horizon):
 		self.mission = mission
 		self.targets = list(range(first_index, len(mission)))
 		self.cursor = 0
@@ -42,27 +42,39 @@ class Correction:
 		self.points = []
 		self.origins = []
 		self.skipped = []
+		self.horizon = horizon
+		self.length = 0.0
+		self.beyond = 0
+		self.carried = 0
 
 	def target_index(self):
 		return self.targets[self.cursor] if self.cursor < len(self.targets) else None
 
+	def advance(self):
+		self.cursor += 1
+		if self.length >= self.horizon:
+			self.beyond += 1
+
 	def pending(self):
 		index = self.target_index()
-		if index is None:
+		if index is None or self.beyond > 1:
 			return None
 
 		return (self.from_x, self.from_y), (self.mission[index][0], self.mission[index][1]), index
 
 	def accept(self, path, index):
 		z = self.mission[index][2]
+		previous = (self.from_x, self.from_y)
 		for x, y in path:
 			if self.points and abs(self.points[-1][0] - x) < 1e-6 and abs(self.points[-1][1] - y) < 1e-6:
 				continue
+			self.length += math.hypot(x - previous[0], y - previous[1])
+			previous = (x, y)
 			self.points.append((x, y, z))
 			self.origins.append(None)
 
 		if not self.points:
-			self.cursor += 1
+			self.advance()
 			return
 
 		if math.hypot(self.points[-1][0] - self.mission[index][0], self.points[-1][1] - self.mission[index][1]) <= REACHED_WAYPOINT:
@@ -70,14 +82,25 @@ class Correction:
 
 		self.origins[-1] = index
 		self.from_x, self.from_y = self.points[-1][0], self.points[-1][1]
-		self.cursor += 1
+		self.advance()
 
 	def entries(self):
 		return [(x, y, z, origin) for (x, y, z), origin in zip(self.points, self.origins)]
 
 	def skip(self, index):
 		self.skipped.append(index)
-		self.cursor += 1
+		self.advance()
+
+	def carry_remaining(self):
+		if not self.points:
+			return
+
+		self.carried = len(self.targets) - self.cursor
+		for index in self.targets[self.cursor:]:
+			self.points.append(self.mission[index])
+			self.origins.append(index)
+
+		self.cursor = len(self.targets)
 
 class ObstacleMonitorNode:
 
@@ -253,16 +276,16 @@ class ObstacleMonitorNode:
 			return
 
 		rospy.logwarn("obstacle monitor: route obstructed on leg %d, %.0fm ahead, clearance %.1fm", msg.blocked_leg, msg.blocked_distance, msg.min_clearance)
-		self.begin_walk()
+		self.begin_walk(msg.blocked_distance)
 
-	def begin_walk(self):
+	def begin_walk(self, horizon):
 		position = self.position()
 		if position is None:
 			return
 
 		severity = MonitorStatus.HOLD if self.state == STUCK else MonitorStatus.SLOW
 
-		self.walk = Correction(self.mission, self.next_index, position[0], position[1])
+		self.walk = Correction(self.mission, self.next_index, position[0], position[1], horizon)
 		self.state = CORRECTING
 		self.publish_status(severity, "Route obstructed, planning a correction.")
 		self.send_next()
@@ -336,6 +359,9 @@ class ObstacleMonitorNode:
 
 	def finish_walk(self):
 		walk = self.walk
+		if walk is not None:
+			walk.carry_remaining()
+
 		self.abandon_walk()
 
 		if walk is None or len(walk.points) < 2:
@@ -376,7 +402,7 @@ class ObstacleMonitorNode:
 		else:
 			self.publish_status(MonitorStatus.REPLAN, "Corrected course planned around obstacles.")
 
-		rospy.loginfo("obstacle monitor: published a correction of %d poses", len(walk.points))
+		rospy.loginfo("obstacle monitor: published a correction of %d poses, %d legs replanned, %d carried unchanged", len(walk.points), len(walk.targets) - walk.carried, walk.carried)
 
 	def publish_remaining(self):
 		self.remaining_pub.publish(make_path(self.planning_frame, self.mission[self.next_index:]))

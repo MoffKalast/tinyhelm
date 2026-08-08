@@ -3,7 +3,7 @@ import heapq
 import numpy as np
 
 from cost_field import LETHAL, shortfall, soft_penalty
-from utils import NEIGHBOURS, segment_bounds_hit_box
+from utils import NEIGHBOURS, segment_bounds_hit_box, segment_hits_box
 
 OK = "ok"
 GOAL_IN_OBSTACLE = "goal_in_obstacle"
@@ -184,7 +184,7 @@ class ThetaStar:
 		self.reason = OK
 		self.start_nudged = False
 
-	def plan(self, field, sx, sy, gx, gy, margin):
+	def plan(self, field, sx, sy, gx, gy, margin, extent):
 		self.last_expansions = 0
 		self.reason = OK
 		self.start_nudged = False
@@ -205,6 +205,9 @@ class ThetaStar:
 				return []
 			start = nudged
 			self.start_nudged = True
+
+		if not segment_hits_box(sx, sy, gx, gy, *extent):
+			return [grid.to_world(start) if self.start_nudged else (sx, sy), (gx, gy)]
 
 		start_x, start_y = grid.to_world(start)
 		heuristic = CoarseHeuristic(field, gx, gy, self.coarse_factor)

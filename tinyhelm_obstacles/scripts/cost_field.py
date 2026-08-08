@@ -45,6 +45,7 @@ class CostField:
 		self.dist = None
 		self.corridor_ok = None
 		self.corridor = None
+		self.recent = None
 		self.centreline = None
 		self.divergence_radius = 0.0
 		self.divergence = None
@@ -74,6 +75,7 @@ class CostField:
 
 	def rasterise_corridor(self, corridor, active=None):
 		self.corridor = corridor or None
+		self.recent = None
 
 		if not corridor:
 			self.corridor_ok = np.ones((self.size, self.size), dtype=bool)
@@ -149,7 +151,15 @@ class CostField:
 		if not self.corridor:
 			return True
 
-		return any(capsule.contains(x, y) for capsule in self.corridor)
+		if self.recent is not None and self.corridor[self.recent].contains(x, y):
+			return True
+
+		for index, capsule in enumerate(self.corridor):
+			if capsule.contains(x, y):
+				self.recent = index
+				return True
+
+		return False
 
 	def cost_at(self, x, y):
 		cell = self.world_to_cell(x, y)

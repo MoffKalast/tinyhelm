@@ -269,7 +269,7 @@ class PlannerNode:
 
 			field.adopt_centreline([(msg.start.x, msg.start.y), (goal_x, goal_y)], msg.corridor_radius)
 
-		raw = self.search.plan(field, msg.start.x, msg.start.y, goal_x, goal_y, msg.corridor_radius)
+		raw = self.search.plan(field, msg.start.x, msg.start.y, goal_x, goal_y, msg.corridor_radius, extent)
 		path = smooth_path(field, raw, ROUTE_SAMPLE_CELLS * field.res, extent) if raw else []
 		elapsed = time.time() - started
 
