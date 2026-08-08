@@ -49,7 +49,7 @@ class CostField:
 		self.divergence_radius = 0.0
 		self.divergence = None
 
-	def adopt(self, resolution, origin_x, origin_y, dist, inflate_radius, soft_radius, corridor, centreline=None, divergence_radius=0.0):
+	def adopt(self, resolution, origin_x, origin_y, dist, inflate_radius, soft_radius, corridor, active=None, centreline=None, divergence_radius=0.0):
 		self.res = resolution
 		self.origin_x = origin_x
 		self.origin_y = origin_y
@@ -59,7 +59,7 @@ class CostField:
 		self.soft = max(soft_radius, inflate_radius + resolution)
 		self.dist = np.minimum(dist, self.soft)
 
-		self.rasterise_corridor(corridor)
+		self.rasterise_corridor(corridor, active)
 		self.adopt_centreline(centreline, divergence_radius)
 
 	def adopt_centreline(self, centreline, divergence_radius):
@@ -72,7 +72,7 @@ class CostField:
 		else:
 			self.divergence = None
 
-	def rasterise_corridor(self, corridor):
+	def rasterise_corridor(self, corridor, active=None):
 		self.corridor = corridor or None
 
 		if not corridor:
@@ -81,7 +81,10 @@ class CostField:
 
 		# Stamping each capsule's bounding box keeps lookups O(1)
 		self.corridor_ok = np.zeros((self.size, self.size), dtype=bool)
-		for capsule in corridor:
+		for index, capsule in enumerate(corridor):
+			if active is not None and not active[index]:
+				continue
+
 			x0, y0 = self.bound_cell(min(capsule.x1, capsule.x2) - capsule.radius, min(capsule.y1, capsule.y2) - capsule.radius)
 			x1, y1 = self.bound_cell(max(capsule.x1, capsule.x2) + capsule.radius, max(capsule.y1, capsule.y2) + capsule.radius)
 			cols, rows = np.meshgrid(np.arange(x0, x1 + 1), np.arange(y0, y1 + 1))

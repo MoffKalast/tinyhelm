@@ -3,7 +3,7 @@ import heapq
 import numpy as np
 
 from cost_field import LETHAL, shortfall, soft_penalty
-from utils import NEIGHBOURS
+from utils import NEIGHBOURS, segment_bounds_hit_box
 
 OK = "ok"
 GOAL_IN_OBSTACLE = "goal_in_obstacle"
@@ -289,18 +289,13 @@ class ThetaStar:
 
 		return points
 
-def smooth_path(field, points, step):
+def smooth_path(field, points, step, extent):
 	#String pulling that respects the cost field. A shortcut is taken only when it is no more expensive than the stretch it replaces
 	if len(points) <= 2:
 		return list(points)
 
 	def integrated_cost(ax, ay, bx, by):
-		min_x, max_x = min(ax, bx), max(ax, bx)
-		min_y, max_y = min(ay, by), max(ay, by)
-		field_max_x = field.origin_x + field.size * field.res
-		field_max_y = field.origin_y + field.size * field.res
-
-		if max_x < field.origin_x or min_x > field_max_x or max_y < field.origin_y or min_y > field_max_y:
+		if not segment_bounds_hit_box(ax, ay, bx, by, *extent):
 			return math.hypot(bx - ax, by - ay)
 
 		length = math.hypot(bx - ax, by - ay)

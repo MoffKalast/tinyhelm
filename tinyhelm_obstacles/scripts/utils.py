@@ -60,6 +60,33 @@ def segment_distance(px, py, ax, ay, bx, by):
 	t = np.clip(((px - ax) * dx + (py - ay) * dy) / len2, 0.0, 1.0) if len2 > 0.0 else 0.0
 	return np.hypot(px - (ax + t * dx), py - (ay + t * dy))
 
+def segment_hits_box(ax, ay, bx, by, min_x, min_y, max_x, max_y):
+	t0 = 0.0
+	t1 = 1.0
+
+	for start, delta, low, high in ((ax, bx - ax, min_x, max_x), (ay, by - ay, min_y, max_y)):
+		if delta == 0.0:
+			if start < low or start > high:
+				return False
+			continue
+
+		near = (low - start) / delta
+		far = (high - start) / delta
+		if near > far:
+			near, far = far, near
+
+		if near > t0:
+			t0 = near
+		if far < t1:
+			t1 = far
+		if t0 > t1:
+			return False
+
+	return True
+
+def segment_bounds_hit_box(ax, ay, bx, by, min_x, min_y, max_x, max_y):
+	return max(ax, bx) >= min_x and min(ax, bx) <= max_x and max(ay, by) >= min_y and min(ay, by) <= max_y
+
 def tail_cursor(route, plan, tolerance):
 	if len(route) < 1:
 		return None

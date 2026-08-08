@@ -13,6 +13,7 @@ from nav_msgs.msg import OccupancyGrid
 from cost_field import CostField, corridor_from_polyline, decode_distance, distance_quantum, nudge_goal
 from theta_star import GOAL_IN_OBSTACLE, GOAL_OUTSIDE_CORRIDOR, NO_ROUTE, OK, START_TRAPPED, UNREACHABLE_COARSE, ThetaStar, smooth_path
 from tinyhelm_obstacles.msg import PathStatus, PathWatch, PlanReply, PlanRequest
+from utils import segment_bounds_hit_box, segment_hits_box
 
 ROUTE_SAMPLE_CELLS = 0.5
 
@@ -43,6 +44,13 @@ class PlannerNode:
 		self.dist = None
 		self.res = None
 		self.origin = (0.0, 0.0)
+
+		self.extent = None
+		self.extent_key = None
+		self.corridor = None
+		self.corridor_key = None
+		self.corridor_flags = None
+		self.watch_flags = None
 
 		self.watched = []
 		self.watch_clearance = 0.0
@@ -75,8 +83,28 @@ class PlannerNode:
 			self.dist = dist
 			self.origin = (msg.info.origin.position.x, msg.info.origin.position.y)
 			self.res = msg.info.resolution
+			self.refresh_extent(dist.shape[0])
 
 		self.review_watched()
+
+	def refresh_extent(self, size):
+		key = (self.origin[0], self.origin[1], self.res, size)
+		if key == self.extent_key:
+			return
+
+		self.extent_key = key
+		self.extent = (self.origin[0], self.origin[1], self.origin[0] + size * self.res, self.origin[1] + size * self.res)
+		self.corridor_flags = None
+		self.watch_flags = None
+
+	def mark_capsules(self, corridor):
+		min_x, min_y, max_x, max_y = self.extent
+		return [segment_hits_box(c.x1, c.y1, c.x2, c.y2, min_x - c.radius, min_y - c.radius, max_x + c.radius, max_y + c.radius) for c in corridor]
+
+	def mark_legs(self, route, clearance):
+		pad = (int(clearance / self.res) + 3) * self.res
+		min_x, min_y, max_x, max_y = self.extent
+		return [segment_bounds_hit_box(route[i - 1][0], route[i - 1][1], route[i][0], route[i][1], min_x - pad, min_y - pad, max_x + pad, max_y + pad) for i in range(1, len(route))]
 
 	def watch_callback(self, msg):
 		try:
@@ -89,25 +117,30 @@ class PlannerNode:
 			self.watched = [(p.x, p.y) for p in msg.path]
 			self.watch_clearance = msg.clearance
 			self.last_blocked = None
+			self.watch_flags = None
 
 		self.review_watched()
 
-	def field_for(self, clearance, corridor, centreline=None, divergence_radius=0.0):
+	def field_for(self, clearance, corridor, active=None, centreline=None, divergence_radius=0.0):
 		with self.lock:
 			if self.dist is None:
 				return None
 			dist = self.dist
 			origin = self.origin
 			res = self.res
+			extent = self.extent
 
 		field = CostField()
-		field.adopt(res, origin[0], origin[1], dist, clearance, self.soft_radius, corridor, centreline, divergence_radius)
-		return field
+		field.adopt(res, origin[0], origin[1], dist, clearance, self.soft_radius, corridor, active, centreline, divergence_radius)
+		return field, extent
 
 	def review_watched(self):
 		with self.lock:
 			route = list(self.watched)
 			clearance = self.watch_clearance
+			if len(route) >= 2 and self.extent is not None and self.watch_flags is None:
+				self.watch_flags = self.mark_legs(route, clearance)
+			marks = self.watch_flags
 
 		if len(route) < 2:
 			return
@@ -116,9 +149,11 @@ class PlannerNode:
 			self.warned_clearance = True
 			rospy.logwarn("planner: clearance %.1fm exceeds soft_radius %.1fm, obstructions beyond the soft radius cannot be seen", clearance, self.soft_radius)
 
-		field = self.field_for(clearance, None)
-		if field is None:
+		snapshot = self.field_for(clearance, None)
+		if snapshot is None:
 			return
+
+		field = snapshot[0]
 
 		step = ROUTE_SAMPLE_CELLS * field.res
 		tolerance = distance_quantum(clearance, self.soft_radius)
@@ -134,7 +169,11 @@ class PlannerNode:
 			bx, by = route[leg]
 			length = math.hypot(bx - ax, by - ay)
 
-			bound = self.leg_clearance_bound(field, ax, ay, bx, by, pad_cells)
+			if marks is not None and not marks[leg - 1]:
+				bound = float("inf")
+			else:
+				bound = self.leg_clearance_bound(field, ax, ay, bx, by, pad_cells)
+
 			if bound is not None and bound >= clearance:
 				worst = min(worst, bound, self.soft_radius)
 			else:
@@ -193,19 +232,32 @@ class PlannerNode:
 
 	def corridor_for(self, geofence, msg):
 		if len(geofence) < 2:
-			return None
+			return None, None
 
-		return corridor_from_polyline(geofence, msg.corridor_radius)
+		key = (tuple(geofence), msg.corridor_radius)
+
+		with self.lock:
+			if key != self.corridor_key:
+				self.corridor_key = key
+				self.corridor = corridor_from_polyline(geofence, msg.corridor_radius)
+				self.corridor_flags = None
+
+			if self.corridor_flags is None and self.extent is not None:
+				self.corridor_flags = self.mark_capsules(self.corridor)
+
+			return self.corridor, self.corridor_flags
 
 	def solve(self, msg):
-		corridor = self.corridor_for([(p.x, p.y) for p in msg.corridor], msg)
+		corridor, active = self.corridor_for([(p.x, p.y) for p in msg.corridor], msg)
 		leg = [(msg.start.x, msg.start.y), (msg.goal.x, msg.goal.y)]
 
-		field = self.field_for(msg.clearance, corridor, leg, msg.corridor_radius)
-		if field is None:
+		snapshot = self.field_for(msg.clearance, corridor, active, leg, msg.corridor_radius)
+		if snapshot is None:
 			rospy.logwarn_throttle(5.0, "planner: request %d arrived before any costmap" % msg.request_id)
 			self.publish_reply(msg.request_id, PlanReply.NO_COSTMAP, [], False, 0.0, 0)
 			return
+
+		field, extent = snapshot
 
 		started = time.time()
 
@@ -218,7 +270,7 @@ class PlannerNode:
 			field.adopt_centreline([(msg.start.x, msg.start.y), (goal_x, goal_y)], msg.corridor_radius)
 
 		raw = self.search.plan(field, msg.start.x, msg.start.y, goal_x, goal_y, msg.corridor_radius)
-		path = smooth_path(field, raw, ROUTE_SAMPLE_CELLS * field.res) if raw else []
+		path = smooth_path(field, raw, ROUTE_SAMPLE_CELLS * field.res, extent) if raw else []
 		elapsed = time.time() - started
 
 		code = RESULT_CODES.get(self.search.reason, PlanReply.NO_ROUTE)
