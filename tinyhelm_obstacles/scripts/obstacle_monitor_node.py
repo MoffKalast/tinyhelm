@@ -15,6 +15,7 @@ from utils import PendingRequest, make_path, path_to_planning_frame, poses_to_xy
 ROUTE_MATCH = 0.01
 REACHED_WAYPOINT = 0.01
 SAME_CORRECTION = 0.5
+HOLD_WITHIN_CLEARANCES = 2.0
 
 NO_MISSION = "no_mission"
 CLEAR = "clear"
@@ -91,6 +92,9 @@ class Correction:
 		self.skipped.append(index)
 		self.advance()
 
+	def reaches_end(self):
+		return bool(self.targets) and bool(self.origins) and self.origins[-1] == self.targets[-1]
+
 	def carry_remaining(self):
 		if not self.points:
 			return
@@ -162,6 +166,9 @@ class ObstacleMonitorNode:
 
 	def position(self):
 		return robot_position(self.tf_buffer, self.planning_frame, self.robot_frame)
+
+	def near_blockage(self, distance):
+		return distance <= HOLD_WITHIN_CLEARANCES * self.clearance()
 
 	def active(self):
 		return bool(self.mission) and self.next_index < len(self.mission) and len(self.plan) >= 2
@@ -269,6 +276,8 @@ class ObstacleMonitorNode:
 			return
 
 		if self.walk is not None or self.request.outstanding():
+			if self.near_blockage(msg.blocked_distance):
+				self.publish_status(MonitorStatus.HOLD, "Obstruction close ahead, holding while a correction is planned.")
 			return
 
 		if not self.active():
@@ -283,11 +292,16 @@ class ObstacleMonitorNode:
 		if position is None:
 			return
 
-		severity = MonitorStatus.HOLD if self.state == STUCK else MonitorStatus.SLOW
+		if self.state == STUCK or self.near_blockage(horizon):
+			severity = MonitorStatus.HOLD
+			message = "Obstruction close ahead, holding while a correction is planned."
+		else:
+			severity = MonitorStatus.SLOW
+			message = "Route obstructed, planning a correction."
 
 		self.walk = Correction(self.mission, self.next_index, position[0], position[1], horizon)
 		self.state = CORRECTING
-		self.publish_status(severity, "Route obstructed, planning a correction.")
+		self.publish_status(severity, message)
 		self.send_next()
 
 	def abandon_walk(self):
@@ -366,6 +380,10 @@ class ObstacleMonitorNode:
 
 		if walk is None or len(walk.points) < 2:
 			self.report_stuck("No usable corrected course through the remaining waypoints.")
+			return
+
+		if not walk.reaches_end():
+			self.report_stuck("Corrected course reaches no further than waypoint %d, holding for the route to clear." % walk.origins[-1])
 			return
 
 		self.publish_revision(walk)
