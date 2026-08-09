@@ -209,7 +209,7 @@ class ThetaStar:
 		if not segment_hits_box(sx, sy, gx, gy, *extent):
 			return [grid.to_world(start) if self.start_nudged else (sx, sy), (gx, gy)]
 
-		if not self.start_nudged and self.direct_is_clear(field, sx, sy, gx, gy):
+		if not self.start_nudged and field.on_centreline(sx, sy) and field.on_centreline(gx, gy) and self.direct_is_clear(field, sx, sy, gx, gy):
 			return [(sx, sy), (gx, gy)]
 
 		start_x, start_y = grid.to_world(start)

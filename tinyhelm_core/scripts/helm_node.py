@@ -114,7 +114,7 @@ class HelmCore:
 
 		rospy.loginfo("HelmCore initialized. Waiting for enabled=True to allow behaviours.")
 
-		# Only allow teleop at start
+		# Only allow teleop at startup
 		self.set_cmd_vel_mux("")
 		self.speed_scale_pub.publish(Float32(self.speed_scale))
 
@@ -163,8 +163,6 @@ class HelmCore:
 			#we keep the manual override instead
 			return
 
-		"""Looks up base_link at the moment of activation and drops a marker there. This is separate
-		from manual_home, which comes from an operator on the home_topic instead."""
 		try:
 			home = get_pose_in_frame(self.tf2_buffer, self.PLANNING_FRAME, self.ROBOT_FRAME)
 		except Exception as e:
@@ -217,13 +215,13 @@ class HelmCore:
 		return arr
 
 	def stop_controller(self, controller: str):
-			if controller == self.active_controller:
-				self.set_cmd_vel_mux("")
-			
-			ctrl = self.controllers.get(controller, {})
-			stop_pub = ctrl.get('stop_pub')
-			if stop_pub:
-				stop_pub.publish(Empty())
+		if controller == self.active_controller:
+			self.set_cmd_vel_mux("")
+		
+		ctrl = self.controllers.get(controller, {})
+		stop_pub = ctrl.get('stop_pub')
+		if stop_pub:
+			stop_pub.publish(Empty())
 
 	def estop_callback(self, msg: Empty):
 		if self.active_controller == "stationkeeping":
@@ -268,17 +266,11 @@ class HelmCore:
 		if self.active_controller and self.active_controller != controller_name:
 			self.stop_controller(self.active_controller)
 			rospy.sleep(0.1)
-			# Only the outgoing controller's markers go; the aggregate redraws without them on the
-			# next tick, so monitor overlays survive the switch
 			self.drop_markers(f"controller:{self.active_controller}")
 
 		self.set_intention(intention)
 
 	def wait_for_robot_pose(self) -> Optional[PoseStamped]:
-		"""Waits for TF rather than abandoning the plan. A gap here is almost always a transient
-		localisation dropout and the vessel is holding position through it anyway, so retrying is
-		better than failing a mission over it. Gives up only on shutdown or on being disabled,
-		since publishing a plan the operator has since called off would be worse than nothing."""
 		while not rospy.is_shutdown():
 			if not self.enabled:
 				rospy.logwarn("Helm was disabled while waiting for a transform, dropping the plan.")
@@ -293,11 +285,6 @@ class HelmCore:
 		return None
 
 	def anchored_plan(self, intention: Intention):
-		"""Prepends the vessel's position so the run out to the first waypoint is a real leg of the
-		plan, which both keeps the controller from having to invent an anchor of its own and puts
-		that transit in front of the monitors, since it is water like any other and may need
-		avoiding. Taken fresh on every publish: a RESTART re-sends the same Intention, so an anchor
-		captured when a loiter began would by now be a phantom waypoint hours behind us."""
 		plan = intention.plan
 		if not intention.bootstrap or not isinstance(plan, Path) or not plan.poses:
 			return plan
@@ -338,8 +325,6 @@ class HelmCore:
 			rospy.logerr(f"{behaviour_name}({controller_name}) sent incompatible plan object.")
 			return
 
-		# store current behaviour metadata. The Intention keeps its original plan so a RESTART
-		# re-anchors from scratch; executed_plan is what actually went out
 		self.current_behavior = {
 			'name': behaviour_name,
 			'controller': controller_name,
@@ -352,8 +337,6 @@ class HelmCore:
 		self.publish_mission(plan)
 
 	def hold_reach(self):
-		"""Summed bound on how far an automatic hold target may sit from the vessel. The params
-		are dynamically reconfigurable, so they are read per check rather than cached."""
 		reach = 0.0
 		for param in self.hold_reach_params:
 			value = rospy.get_param(param, None)
@@ -373,10 +356,6 @@ class HelmCore:
 		return do_transform_pose(pose, transform)
 
 	def within_hold_reach(self, goal: PoseStamped, fallback_frame: str) -> bool:
-		"""A monitor revision can truncate the plan or substitute its last waypoint, so the
-		stored plan may end somewhere the vessel never went, possibly inside an obstacle. An
-		automatic hold trusts that target only while the vessel is near it. Compared in XY only,
-		since both bounds are horizontal and altitude may be ignored entirely."""
 		try:
 			robot = get_pose_in_frame(self.tf2_buffer, self.PLANNING_FRAME, self.ROBOT_FRAME)
 			target = self.pose_in_planning_frame(goal, fallback_frame)
@@ -397,9 +376,6 @@ class HelmCore:
 		return True
 
 	def publish_mission(self, plan):
-		"""Mirrors the mission being executed to all monitors; an empty Path means nothing to watch.
-		The current path is emptied alongside it, so a monitor cannot keep judging the previous
-		mission's course until the controller gets round to publishing its first plan."""
 		msg = plan if isinstance(plan, Path) else Path()
 		for m in self.monitors.values():
 			m['revision_pending'] = False
@@ -413,8 +389,6 @@ class HelmCore:
 				m['current_path_pub'].publish(Path())
 
 	def current_path_callback(self, controller_name: str, msg: Path):
-		"""Monitors watch what is actually being steered rather than reaching into a controller's
-		topics themselves, so the active controller's own plan is relayed on to them here."""
 		if controller_name != self.active_controller:
 			return
 
@@ -426,7 +400,7 @@ class HelmCore:
 		if monitor_name not in self.monitors:
 			return
 		self.monitors[monitor_name]['last_revised_path'] = msg
-		# the REPLAN status can outrun its revision across topics; fulfill the request now
+
 		if self.monitors[monitor_name].get('revision_pending'):
 			self.revise_plan(monitor_name)
 
@@ -438,17 +412,12 @@ class HelmCore:
 
 		self.monitors[monitor_name]['status'] = msg.status
 
-		# A revision is offered by one monitor, while how fast the vessel may move depends on all of
-		# them, so the proposal is handled here and the pace below
 		if Monitors.action_for(msg.status) == MonitorAction.REVISE_PLAN:
 			self.revise_plan(monitor_name)
 
 		self.apply_monitor_state()
 
 	def monitor_state(self) -> int:
-		"""The unhappiest thing any monitor currently reports. The statuses are ranked by severity, so
-		monitors that disagree need no arbitration: the worst of them decides, and a monitor that has
-		gone quiet keeps its last word until it says otherwise."""
 		return max([m.get('status', MonitorStatus.OK) for m in self.monitors.values()] + [MonitorStatus.OK])
 
 	def apply_monitor_state(self):
@@ -463,11 +432,6 @@ class HelmCore:
 		self.refresh_speed_scale()
 
 	def refresh_speed_scale(self):
-		"""A monitor never stops the vessel, it only sets how fast it may go, and HOLD is that dial at
-		zero. Nothing is stopped, cancelled or re-published: the controller keeps its route and its
-		place in it, the monitors keep watching the route being steered, and lifting a hold is this
-		number going back up. The vessel drifts while held rather than fighting to stay put, which is
-		the price of the mission surviving the wait."""
 		action = Monitors.action_for(self.monitor_state())
 
 		if action == MonitorAction.HOLD_STILL:
@@ -477,8 +441,6 @@ class HelmCore:
 		else:
 			scale = 1.0
 
-		# Stationkeeping fights wind and current to stay put, so throttling it would only lose ground,
-		# and there is no forward progress to take out of it in the first place
 		if self.active_controller == "stationkeeping":
 			scale = 1.0
 
@@ -490,10 +452,6 @@ class HelmCore:
 		rospy.loginfo(f"Nav speed scaled to {scale:.2f}.")
 
 	def trim_revision(self, revision: Path) -> Path:
-		"""Last chance to drop legs the vessel has outrun. A search takes as long as it takes and the
-		result then waits on a monitor status before being relayed, by which point its opening leg
-		can be well astern, and the controller has no way to tell a stale opening pose from a
-		waypoint it is meant to visit."""
 		if revision.header.frame_id and revision.header.frame_id != self.PLANNING_FRAME:
 			rospy.logwarn_throttle(5.0, f"Revision arrived in {revision.header.frame_id}, not {self.PLANNING_FRAME}, relaying it whole.")
 			return revision
@@ -526,9 +484,9 @@ class HelmCore:
 			rospy.logwarn_throttle(5.0, f"Monitor {monitor_name} proposed a revision but the active controller cannot accept one.")
 			return
 
-		# The controller works out where to rejoin a path by itself, so a revision needs no topic of
-		# its own; it is just another path that happens to start next to us
+
 		path_pub.publish(self.trim_revision(revision))
+
 		# consume it so a repeated REPLAN status doesn't re-send an identical revision
 		self.monitors[monitor_name]['last_revised_path'] = None
 		self.monitors[monitor_name]['revision_pending'] = False
@@ -591,14 +549,9 @@ class HelmCore:
 		self.store_markers(f"controller:{controller_name}", msg)
 
 	def monitor_markers_callback(self, monitor_name: str, msg: MarkerArray):
-		# Monitors are relayed whoever is driving: an obstacle overlay is most wanted precisely
-		# when a monitor has forced the helm into stationkeeping
 		self.store_markers(f"monitor:{monitor_name}", msg)
 
 	def store_markers(self, source: str, msg: MarkerArray):
-		"""A source clearing its own markers must never reach the aggregate, since one DELETEALL
-		in there wipes every other source's namespaces too. It drops the source's entry instead,
-		and the leading wipe in relay_markers takes care of the rest."""
 		delete_all = getattr(Marker, "DELETEALL", 3)
 		markers = [m for m in msg.markers if m.action != delete_all]
 
@@ -635,15 +588,11 @@ class HelmCore:
 			sources = list(self.marker_sources.values())
 
 		if not sources:
-			# One final wipe on the transition, then stay quiet
 			if self.markers_published:
 				self.clear_markers()
 				self.markers_published = False
 			return
 
-		# A leading wipe followed by a full redraw in the same array: a source that stopped
-		# publishing disappears without the helm tracking every namespace and id it ever relayed.
-		# Rviz applies the whole array in one pass, so this does not flicker.
 		arr = MarkerArray()
 		arr.markers.append(Marker())
 		arr.markers[0].action = getattr(Marker, "DELETEALL", 3)

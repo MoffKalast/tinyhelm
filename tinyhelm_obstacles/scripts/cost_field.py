@@ -120,6 +120,12 @@ class CostField:
 	def deviation_at(self, x, y):
 		return min(segment_distance(x, y, self.centreline[i - 1][0], self.centreline[i - 1][1], self.centreline[i][0], self.centreline[i][1]) for i in range(1, len(self.centreline)))
 
+	def on_centreline(self, x, y):
+		if not self.centreline:
+			return True
+
+		return self.deviation_at(x, y) <= self.res
+
 	def divergence_cost(self, x, y):
 		if self.divergence is None:
 			return 0.0

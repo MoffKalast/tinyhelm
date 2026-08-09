@@ -247,9 +247,17 @@ class PlannerNode:
 
 			return self.corridor, self.corridor_flags
 
+	def centreline_for(self, geofence, goal_x, goal_y):
+		for index in range(1, len(geofence)):
+			if abs(geofence[index][0] - goal_x) <= 1e-6 and abs(geofence[index][1] - goal_y) <= 1e-6:
+				return [geofence[index - 1], geofence[index]]
+
+		return None
+
 	def solve(self, msg):
-		corridor, active = self.corridor_for([(p.x, p.y) for p in msg.corridor], msg)
-		leg = [(msg.start.x, msg.start.y), (msg.goal.x, msg.goal.y)]
+		geofence = [(p.x, p.y) for p in msg.corridor]
+		corridor, active = self.corridor_for(geofence, msg)
+		leg = self.centreline_for(geofence, msg.goal.x, msg.goal.y) or [(msg.start.x, msg.start.y), (msg.goal.x, msg.goal.y)]
 
 		snapshot = self.field_for(msg.clearance, corridor, active, leg, msg.corridor_radius)
 		if snapshot is None:
@@ -267,7 +275,7 @@ class PlannerNode:
 			rospy.loginfo("planner: request %d goal was blocked, moved %.1fm to clear water", msg.request_id, math.hypot(nudged[0] - goal_x, nudged[1] - goal_y))
 			goal_x, goal_y = nudged
 
-			field.adopt_centreline([(msg.start.x, msg.start.y), (goal_x, goal_y)], msg.corridor_radius)
+			field.adopt_centreline([leg[0], (goal_x, goal_y)], msg.corridor_radius)
 
 		raw = self.search.plan(field, msg.start.x, msg.start.y, goal_x, goal_y, msg.corridor_radius, extent)
 		path = smooth_path(field, raw, field.res, extent, msg.corridor_radius) if raw else []
