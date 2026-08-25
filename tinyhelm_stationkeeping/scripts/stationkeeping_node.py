@@ -21,40 +21,42 @@ from utils import transform_to_pose, normalize_angle, clamp, PID
 
 class StationKeepingNode:
 	def __init__(self):
-		rospy.init_node("stationkeeping_node")
+		rospy.init_node("tinyhelm_stationkeeping")
 
-		self.ROBOT_FRAME = rospy.get_param('~base_frame', 'base_link')
-		self.PLANNING_FRAME = rospy.get_param('~planning_frame', 'local')
+		self.ROBOT_FRAME = rospy.get_param('/robot_frame', 'base_link')
+		self.PLANNING_FRAME = rospy.get_param('/planning_frame', 'local')
 
-		self.MAX_LINEAR_SPD = rospy.get_param("~max_linear_speed", 0.45)
-		self.MAX_ANGULAR_SPD = rospy.get_param("~max_turning_speed", 0.9)
-		self.MAX_DIVEGENCE = rospy.get_param("~max_divergence", 5.0)
-		self.RATE = rospy.Rate(rospy.get_param("~rate", 30))
+		self.params = rospy.get_param("/tinyhelm_stationkeeping", {})
+		if not self.params:
+			rospy.logwarn("No parameters found under 'tinyhelm_stationkeeping'. Did you load the YAML file?")
+			raise SystemExit(1)
 
-		self.DEADZONE_FRACT = rospy.get_param("~deadzone_fraction", 0.1)
+		self.MAX_LINEAR_SPD = self.params.get('max_linear_speed')
+		self.MAX_ANGULAR_SPD = self.params.get('max_turning_speed')
+		self.MAX_DIVEGENCE = self.params.get('max_divergence')
+		self.rate_hz = self.params.get('rate')
+		self.RATE = rospy.Rate(self.rate_hz)
+
+		self.DEADZONE_FRACT = self.params.get('deadzone_fraction')
 		self.enabled = False
 		self.goal_pose = None  # PoseStamped
-		self.pid = PID(
-			rospy.get_param('P', 3.0),
-			rospy.get_param('I', 0.001),
-			rospy.get_param('D', 65.0)
-		)
+		self.pid = PID(self.params.get('P'), self.params.get('I'),self.params.get('D'))
 		self.deadzone = self.DEADZONE_FRACT * self.MAX_DIVEGENCE
 
 		self.tf2_buffer = tf2_ros.Buffer()
 		self.tf2_listener = tf2_ros.TransformListener(self.tf2_buffer)
 
 		self.cmd_vel_pub = rospy.Publisher("/cmd_vel_stationkeeping", Twist, queue_size=1)
-		self.marker_pub = rospy.Publisher("/stationkeeping/debug_markers", MarkerArray, queue_size=1)
-		self.status_pub = rospy.Publisher("/stationkeeping/status", ControllerStatus, queue_size=1, latch=True)
+		self.marker_pub = rospy.Publisher("/stationkeeping/_markers", MarkerArray, queue_size=1)
+		self.status_pub = rospy.Publisher("/stationkeeping/_status", ControllerStatus, queue_size=1, latch=True)
 
-		self.goal_sub = rospy.Subscriber("/hold_position", PoseStamped, self.position_callback, queue_size=1)
+		self.goal_sub = rospy.Subscriber("/stationkeeping/_pose", PoseStamped, self.position_callback, queue_size=1)
 
-		self.estop_sub = rospy.Subscriber("/hold_position/clear", Empty, self.estop_callback)
+		self.estop_sub = rospy.Subscriber("/stationkeeping/_clear", Empty, self.estop_callback)
 
 		# Tracking enable and disable messages while publishing latched state
-		self.enabled_sub = rospy.Subscriber("/stationkeeping/enabled", Bool, self.enabled_callback)
-		self.enabled_pub = rospy.Publisher("/stationkeeping/enabled", Bool, queue_size=1, latch=True)
+		self.enabled_sub = rospy.Subscriber("/stationkeeping/_enabled", Bool, self.enabled_callback)
+		self.enabled_pub = rospy.Publisher("/stationkeeping/_enabled", Bool, queue_size=1, latch=True)
 		self.enabled_pub.publish(self.enabled)
 
 		# Dynamic reconfigure server
@@ -70,11 +72,11 @@ class StationKeepingNode:
 		self.status_pub.publish(msg)
 
 	def reconfigure_callback(self, config, level):
-		self.DEBUG_MARKERS = config.publish_debug_markers
 		self.MAX_LINEAR_SPD = config.max_linear_speed
 		self.MAX_ANGULAR_SPD = config.max_turning_speed
 		self.MAX_DIVEGENCE = config.max_divergence
-		self.RATE = rospy.Rate(config.rate)
+		self.rate_hz = config.rate
+		self.RATE = rospy.Rate(self.rate_hz)
 		self.DEADZONE_FRACT = config.deadzone_fraction
 		self.deadzone = self.DEADZONE_FRACT * self.MAX_DIVEGENCE
 
@@ -193,9 +195,9 @@ class StationKeepingNode:
 		min_angle = math.radians(5)
 		max_angle = math.radians(20)
 
-		if heading_error > min_angle:
+		if abs(heading_error) > min_angle:
 			# Map heading_error from [min_angle, max_angle] -> [1, 0]
-			scale = 1.0 - clamp((heading_error - min_angle) / (max_angle - min_angle), 0.0, 1.0)
+			scale = 1.0 - clamp((abs(heading_error) - min_angle) / (max_angle - min_angle), 0.0, 1.0)
 			linear_vel *= scale
 
 		if not forward:
@@ -203,14 +205,31 @@ class StationKeepingNode:
 
 		self.send_twist(linear_vel, angular_vel)
 
+	def handle_time_jump(self):
+		rospy.logwarn("Time moved backwards, disabling and resetting.")
+		self.tf2_buffer.clear()
+		self.pid.reset()
+		self.enabled_callback(Bool(False))
+		self.RATE = rospy.Rate(self.rate_hz)
+
 	def run(self):
+		last_time = rospy.Time.now()
+
 		while not rospy.is_shutdown():
 			try:
+				now = rospy.Time.now()
+				if now < last_time:
+					self.handle_time_jump()
+				last_time = now
+
 				self.update()
+				self.RATE.sleep()
+			except rospy.exceptions.ROSTimeMovedBackwardsException:
+				self.handle_time_jump()
+				last_time = rospy.Time.now()
 			except Exception as e:
 				rospy.logwarn(str(e))
 				self.set_status(ControllerStatus.ERROR, str(e))
-			self.RATE.sleep()
 
 	def send_twist(self, linear, angular):
 		if math.isnan(linear):

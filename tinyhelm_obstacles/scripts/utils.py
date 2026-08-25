@@ -1,69 +1,139 @@
-#!/usr/bin/env python3
-
 import math
+
 import numpy as np
+import rospy
+import tf2_geometry_msgs
+import tf2_ros
 
-from geometry_msgs.msg import Pose, Point
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path
 
-def normalize_angle(a):
-	while a > math.pi:
-		a -= 2 * math.pi
-	while a < -math.pi:
-		a += 2 * math.pi
-	return a
+NEIGHBOURS = ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1))
 
-def clamp(num, min, max):
-	return min if num < min else max if num > max else num
+def robot_position(buffer, planning_frame, robot_frame):
+	try:
+		tf = buffer.lookup_transform(planning_frame, robot_frame, rospy.Time(0))
+		return tf.transform.translation.x, tf.transform.translation.y
+	except tf2_ros.TransformException as e:
+		rospy.logwarn_throttle(5.0, "no %s -> %s: %s" % (planning_frame, robot_frame, e))
+		return None
 
-def transform_to_pose(t):
-	pose = Pose()
-	pose.position.x = t.transform.translation.x
-	pose.position.y = t.transform.translation.y
-	pose.position.z = t.transform.translation.z
-	pose.orientation.x = t.transform.rotation.x
-	pose.orientation.y = t.transform.rotation.y
-	pose.orientation.z = t.transform.rotation.z
-	pose.orientation.w = t.transform.rotation.w
+def path_to_planning_frame(buffer, msg, planning_frame):
+	frame = msg.header.frame_id
+	if not frame or frame == planning_frame or not msg.poses:
+		return list(msg.poses)
 
+	try:
+		tf = buffer.lookup_transform(planning_frame, frame, rospy.Time(0))
+	except tf2_ros.TransformException as e:
+		rospy.logwarn("path in '%s' could not be transformed, ignoring it: %s" % (frame, e))
+		return None
+
+	return [tf2_geometry_msgs.do_transform_pose(pose, tf) for pose in msg.poses]
+
+def poses_to_xy(poses):
+	return [(p.pose.position.x, p.pose.position.y) for p in poses]
+
+def poses_to_xyz(poses):
+	return [(p.pose.position.x, p.pose.position.y, p.pose.position.z) for p in poses]
+
+def make_pose(frame, x, y, z):
+	pose = PoseStamped()
+	pose.header.frame_id = frame
+	pose.pose.position.x = x
+	pose.pose.position.y = y
+	pose.pose.position.z = z
+	pose.pose.orientation.w = 1.0
 	return pose
 
-def get_dir(from_vec, to_vec):
-	target_direction = [
-		to_vec.x - from_vec.x,
-		to_vec.y - from_vec.y,
-	]
-	target_distance = math.sqrt(target_direction[0] ** 2 + target_direction[1] ** 2)
+def make_path(frame, points):
+	msg = Path()
+	msg.header.frame_id = frame
+	msg.header.stamp = rospy.Time.now()
+	msg.poses = [make_pose(frame, x, y, z) for x, y, z in points]
+	return msg
 
-	return [target_direction[0] / target_distance, target_direction[1] / target_distance]
+def segment_distance(px, py, ax, ay, bx, by):
+	dx = bx - ax
+	dy = by - ay
+	len2 = dx * dx + dy * dy
+	t = np.clip(((px - ax) * dx + (py - ay) * dy) / len2, 0.0, 1.0) if len2 > 0.0 else 0.0
+	return np.hypot(px - (ax + t * dx), py - (ay + t * dy))
 
-class PID:
-	def __init__(self, kp, ki, kd, target=0, windup_guard=20.0):
-		self.kp = kp
-		self.ki = ki
-		self.kd = kd
-		self.target = target
+def segment_hits_box(ax, ay, bx, by, min_x, min_y, max_x, max_y):
+	t0 = 0.0
+	t1 = 1.0
 
-		self.windup_guard = windup_guard
+	for start, delta, low, high in ((ax, bx - ax, min_x, max_x), (ay, by - ay, min_y, max_y)):
+		if delta == 0.0:
+			if start < low or start > high:
+				return False
+			continue
 
-		self.prev_error = 0.0
-		self.integral = 0.0
-		self.derivative = 0.0
+		near = (low - start) / delta
+		far = (high - start) / delta
+		if near > far:
+			near, far = far, near
 
-	def reset(self):
-		self.prev_error = 0.0
-		self.integral = 0.0
-		self.derivative = 0.0
+		if near > t0:
+			t0 = near
+		if far < t1:
+			t1 = far
+		if t0 > t1:
+			return False
 
-	def compute(self, current_value):
-		error = self.target - current_value
+	return True
 
-		self.integral += error
-		self.integral = max(min(self.integral, self.windup_guard), -self.windup_guard)
+def segment_bounds_hit_box(ax, ay, bx, by, min_x, min_y, max_x, max_y):
+	return max(ax, bx) >= min_x and min(ax, bx) <= max_x and max(ay, by) >= min_y and min(ay, by) <= max_y
 
-		self.derivative = error - self.prev_error
+def tail_cursor(route, plan, tolerance):
+	if len(route) < 1:
+		return None
 
-		output = self.kp * error + self.ki * self.integral + self.kd * self.derivative
+	remaining = len(plan) - 1
+	if remaining < 1 or remaining > len(route):
+		return None
 
-		self.prev_error = error
+	cursor = len(route) - remaining
+	if math.hypot(route[cursor][0] - plan[1][0], route[cursor][1] - plan[1][1]) > tolerance:
+		return None
 
-		return output
+	return cursor
+
+class PendingRequest:
+
+	def __init__(self, timeout, retries):
+		self.timeout = timeout
+		self.retries = retries
+		self.request_id = None
+		self.mission_index = None
+		self.attempts = 0
+		self.deadline = rospy.Time(0)
+
+	def open(self, request_id, mission_index):
+		self.request_id = request_id
+		self.mission_index = mission_index
+		self.attempts = 1
+		self.deadline = rospy.Time.now() + rospy.Duration(self.timeout)
+
+	def outstanding(self):
+		return self.request_id is not None
+
+	def matches(self, request_id):
+		return self.request_id is not None and request_id == self.request_id
+
+	def expired(self, now):
+		return self.request_id is not None and now >= self.deadline
+
+	def exhausted(self):
+		return self.attempts > self.retries
+
+	def retry(self):
+		self.attempts += 1
+		self.deadline = rospy.Time.now() + rospy.Duration(self.timeout)
+
+	def close(self):
+		self.request_id = None
+		self.mission_index = None
+		self.attempts = 0

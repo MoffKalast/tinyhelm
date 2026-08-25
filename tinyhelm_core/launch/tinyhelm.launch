@@ -1,11 +1,29 @@
 <launch>
 
-    <rosparam file="$(find tinyhelm_core)/param/config.yaml" command="load"/>
+	<arg name="helm_config" default="$(find tinyhelm_core)/param/helm.yaml"/>
+	<arg name="planner_config" default="$(find tinyhelm_core)/param/planner_asv.yaml"/>
+	<arg name="obstacles_config" default="$(find tinyhelm_core)/param/obstacles.yaml"/>
 
-    <include file="$(find tinyhelm_stationkeeping)/launch/stationkeeping.launch"/>
-    <include file="$(find tinyhelm_waypoints)/launch/asv.launch"/>
+	<!-- Controller Manager Node-->
+	<node name="tinyhelm_core" pkg="tinyhelm_core" type="helm_node.py" output="screen"/>
+	<node name="tinyhelm_cmd_vel_mux" pkg="tinyhelm_core" type="cmd_vel_mux" output="screen"/>
 
-    <node name="tinyhelm_core_node" pkg="tinyhelm_core" type="helm_core.py" output="screen"/>
-    <node name="tinyhelm_cmd_vel_mux" pkg="tinyhelm_core" type="cmd_vel_mux" output="screen"/>
+	<!-- Controllers -->
+	<include file="$(find tinyhelm_waypoints)/launch/waypoints.launch">
+		<arg name="helm_config" value="$(arg helm_config)"/>
+		<arg name="planner_config" value="$(arg planner_config)"/>
+	</include>
+
+	<include file="$(find tinyhelm_stationkeeping)/launch/stationkeeping.launch">
+		<arg name="helm_config" value="$(arg helm_config)"/>
+		<arg name="planner_config" value="$(arg planner_config)"/>
+	</include>
+
+	<!-- Monitors -->
+	<include file="$(find tinyhelm_obstacles)/launch/obstacles.launch">
+		<arg name="helm_config" value="$(arg helm_config)"/>
+		<arg name="planner_config" value="$(arg planner_config)"/>
+		<arg name="obstacles_config" value="$(arg obstacles_config)"/>
+	</include>
 
 </launch>

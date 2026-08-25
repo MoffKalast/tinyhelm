@@ -51,6 +51,19 @@ def project_position(start, end, current, mindist, maxdist, line_divergence, sid
 def clamp(num, min, max):
 	return min if num < min else max if num > max else num
 
+def point_segment_distance(px, py, ax, ay, bx, by):
+	"""Distance to the segment, not to the infinite line it lies on. The projection is clamped to
+	the endpoints, so a segment the vessel has already run past reports the distance to its far end
+	and stops looking like a leg still being tracked."""
+	dx, dy = bx - ax, by - ay
+	length_sq = dx * dx + dy * dy
+
+	if length_sq < 1e-9:
+		return math.hypot(px - ax, py - ay)
+
+	t = clamp(((px - ax) * dx + (py - ay) * dy) / length_sq, 0.0, 1.0)
+	return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
 def transform_to_pose(t):
 	pose = Pose()
 	pose.position.x = t.transform.translation.x

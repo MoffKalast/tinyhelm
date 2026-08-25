@@ -1,46 +1,19 @@
 <launch>
 
-    <arg name="fixed_frame" default="local" />
-    <arg name="cell_resolution" default="0.25"/>
+	<arg name="helm_config" default="$(find tinyhelm_core)/param/helm.yaml"/>
+	<arg name="planner_config" default="$(find tinyhelm_core)/param/planner_asv.yaml"/>
+	<arg name="obstacles_config" default="$(find tinyhelm_core)/param/obstacles.yaml"/>
 
-    <!--<node name="tinyhelm_obstacles_node" pkg="tinyhelm_obstacles" type="sensor_to_obstacle_node.py" output="screen">
-        <param name="fixed_frame" value="$(arg fixed_frame)"/>
-        <param name="cell_resolution" value="$(arg cell_resolution)"/>
-    </node>-->
+	<rosparam file="$(arg helm_config)" command="load"/>
+	<!-- The monitor reads its clearance off the active controller's params, hence planner_config -->
+	<rosparam file="$(arg planner_config)" command="load"/>
+	<rosparam file="$(arg obstacles_config)" command="load"/>
 
-	<node pkg="octomap_server" type="octomap_server_node" name="octomap_server">
-		<param name="resolution" value="0.5" />
-		<param name="frame_id" type="string" value="$(arg fixed_frame)" />
+	<node name="tinyhelm_scan_to_reliable_cloud" pkg="tinyhelm_obstacles" type="scan_to_cloud" output="screen"/>
+	<node name="tinyhelm_scan_to_unreliable_cloud" pkg="tinyhelm_obstacles" type="scan_to_cloud" output="screen"/>
 
-		<param name="sensor_model_max_range" value="25.0" />
-        <param name="sensor_model_min_range" value="1.0" />
-
-        <param name="sensor_model_hit" value="0.9" />
-        <param name="sensor_model_miss" value="0.6" />
-
-        <param name="pointcloud_min_z" value="-0.4" />
-        <param name="pointcloud_max_z" value="1.0" />
-        
-        
-		<remap from="cloud_in" to="/obstacle_cloud" />
-	
-	</node>
-
-    <node name="tinyhelm_scan_to_cloud_node" pkg="tinyhelm_obstacles" type="scan_to_cloud" output="screen">
-        <param name="fixed_frame" value="laser"/>
-        <param name="scan_topic" value="/scan_filtered"/>
-        <param name="cloud_topic" value="/obstacle_cloud"/>
-    </node>
-
-    <!--<node name="tinyhelm_obstacles_node" pkg="tinyhelm_obstacles" type="sensor_to_obstacle_xyz_node.py" output="screen">
-        <param name="fixed_frame" value="$(arg fixed_frame)"/>
-        <param name="cell_resolution" value="$(arg cell_resolution)"/>
-    </node>-->
-
-    <!--node name="tinyhelm_scan_to_grid_node" pkg="tinyhelm_obstacles" type="scan_to_grid" output="screen">
-        <param name="fixed_frame" value="$(arg fixed_frame)"/>
-        <param name="scan_topic" value="/scan_filtered"/>
-        <param name="cell_resolution" value="$(arg cell_resolution)"/>
-    </node>-->
+	<node name="tinyhelm_costmap" pkg="tinyhelm_obstacles" type="costmap_node.py" output="screen"/>
+	<node name="tinyhelm_planner" pkg="tinyhelm_obstacles" type="planner_node.py" output="screen"/>
+	<node name="tinyhelm_obstacles" pkg="tinyhelm_obstacles" type="obstacle_monitor_node.py" output="screen"/>
 
 </launch>

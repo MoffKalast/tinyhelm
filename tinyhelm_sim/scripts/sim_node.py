@@ -50,8 +50,8 @@ class VesselSimNode:
 
         # Waves
         wave_cfg = {
-            'wave_height': rospy.get_param("~wave_height", 2.0),
-            'wave_scale': rospy.get_param("~wave_scale", 0.1),
+            'wave_height': rospy.get_param("~wave_height", 1.0),
+            'wave_scale': rospy.get_param("~wave_scale", 0.05),
             'time_scale': rospy.get_param("~wave_time_scale", 0.5),
             'octaves': rospy.get_param("~octaves", 4),
             'persistence': rospy.get_param("~persistence", 0.3),
@@ -61,7 +61,7 @@ class VesselSimNode:
 
         # ROS I/O
         self.sub_cmd = rospy.Subscriber("/cmd_vel", Twist, self.cmd_cb, queue_size=1)
-        self.pub_fix = rospy.Publisher("/fix", NavSatFix, queue_size=1)
+        self.pub_fix = rospy.Publisher("/gnss/fix", NavSatFix, queue_size=1)
         self.pub_imu = rospy.Publisher("/imu/data", Imu, queue_size=1)
 
         self.sim_time = 0.0

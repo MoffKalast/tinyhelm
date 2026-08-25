@@ -6,6 +6,6 @@
 	<rosparam file="$(arg helm_config)" command="load"/>
 	<rosparam file="$(arg planner_config)" command="load"/>
 
-	<node name="tinyhelm_stationkeeping" pkg="tinyhelm_stationkeeping" type="stationkeeping_node.py" output="screen"/>
+	<node name="tinyhelm_waypoints" pkg="tinyhelm_waypoints" type="waypoints_node.py" output="screen"/>
 
 </launch>

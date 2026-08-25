@@ -8,72 +8,80 @@ A local planner that takes two goals (last and next), and follows a projected go
 
 ## Params
 
-```xml
-<node name="line_planner" pkg="line_planner" type="line_planner_node.py" output="screen">
-	<param name="robot_frame" value="base_link"/>
-	<param name="planning_frame" value="map"/>
+The frames are read from the global `/robot_frame` and `/planning_frame` (set in `helm.yaml`), everything else is private to the node and normally comes from the planner config loaded alongside it:
 
-	<param name="publish_debug_markers" value="true"/>
-	<param name="ignore_altitude" value="false"/> <!-- Won't bother with z values -->
+```yaml
+tinyhelm_waypoints:
+    # Any Z sent will be set to zero if true
+    ignore_altitude: false
 
-	<param name="max_linear_speed" value="3.0"/>
-	<param name="max_turning_speed" value="2.0"/>
-	<param name="max_vertical_speed" value="10.0"/>
+    max_linear_speed: 3.0
+    max_turning_speed: 2.0
+    max_vertical_speed: 10.0
 
-	<!-- If base_link is this far away from the line, the projected distance will be min and scale to max when it's on the line.-->
-	<param name="max_line_divergence" value="1.5"/>
+    # If robot_frame is this far from the line, the projected distance will be min and scale to max when it's on the line.
+    max_line_divergence: 1.5
 
-	<!-- If any obstacles are defined then line divergence + robot width are used for finding a suitably wide path.-->
-	<param name="robot_width" value="3.0"/>
+    # The obstacle planner clears a corridor max_line_divergence wide, so half of this is kept as margin to hold the hull inside it.
+    robot_width: 3.0
 
-	<param name="min_project_dist" value="0.3"/>
-	<param name="max_project_dist" value="5.0"/>
+    # The carrot is projected at least/most this far ahead.
+    min_project_dist: 0.3
+    max_project_dist: 5.0
 
-	<!-- Distance at which the goal is considered reached.-->
-	<param name="xy_distance_threshold" value="1.0"/>
-	<param name="z_distance_threshold" value="0.5"/>
+    # Distance at which the goal is considered reached.
+    xy_distance_threshold: 1.0
+    z_distance_threshold: 0.5
 
-	<!-- PID params for heading control.-->
-	<param name="P" value="2.0"/>
-	<param name="I" value="0.002"/>
-	<param name="D" value="65.0"/>
+    # PID params for heading control.
+    P: 2.0
+    I: 0.002
+    D: 65.0
 
-	<!-- If the robot frame is away from the line, the goal will be mirrored into the opposite direction and multiplied with this value.-->
-	<param name="side_offset_mult" value="0.8"/>
+    # If the robot frame is away from the line, the goal will be mirrored into the opposite direction and multiplied with this value.
+    side_offset_mult: 0.8
 
-	<!-- Update rate, should be about the same as localization rate.-->
-	<param name="rate" value="30"/>
-</node>
+    # Update rate, should be about the same as localization rate.
+    rate: 30
 ```
+
+See `tinyhelm_core/param/planner_asv.yaml` and `planner_auv.yaml` for the shipped surface and underwater tunings.
 
 Here's a diagram showing the possible states of the planner, and which distances each parameter affects:
 
 ![diagram](docs/diagram.png)
 
-
 ## Subscribed Topics
 
-- `/move_base_simple/goal` (PoseStamped), takes the current position as the starting point and moves towards the goal
+- `/waypoints/_path` (Path), the route to follow, taking each two consecutive poses as a line to track
 
-- `/move_base_simple/clear` (Empty), stops all movement immediately
+  A path carries no indication of whether it is a new mission, the same one re-sent, or a revision of the one in progress, so where to pick it up is decided geometrically. If any pose is within `xy_distance_threshold` the vessel is standing on a waypoint and that leg is resumed; otherwise the first leg whose segment lies within `max_line_divergence` is resumed; failing both, the vessel transits from where it is to the first pose.
 
-- `/move_base_simple/waypoints` (Path), takes each two consecutive points and navigates along the line between them
+  Both tests take the **earliest** candidate. A survey pattern's parallel lines can sit within one divergence of each other, so preferring the furthest along would let a single detour skip most of the mission. Repeating a leg costs time, skipping one loses coverage.
+
+  The helm anchors every path at the vessel's current position before sending it, so the first leg is the real transit out to the first waypoint rather than something the controller has to invent.
+
+- `/waypoints/_clear` (Empty), stops all movement immediately
 
 ## Published Topics
 
-- `/cmd_vel` (Twist), publishes velocity for vehicle motion
+- `/cmd_vel_waypoints` (Twist), publishes velocity for vehicle motion, muxed onto `/cmd_vel` by the helm core
 
-- `line_planner/active` (Bool), publishes navigation status
+- `/waypoints/_status` (ControllerStatus), latched controller state the helm core reacts to
 
-- `line_planner/plan` (Path), publishes a nav plan, also the entire route if given
+- `/waypoints/_active` (Bool), latched navigation status
 
-- `line_planner/markers` (MarkerArray), publishes debug markers shown above
+- `/waypoints/_plan` (Path), latched, the anchor of the leg in progress followed by everything still to visit. The helm relays this to the monitors as the course actually being steered
 
-- `line_planner/vertical_target` (Float32), publishes the current altitude target
+- `/waypoints/_markers` (MarkerArray), publishes the debug markers shown above, throttled to 5 Hz
 
- ## Dynamic Reconfigure Params
+- `/waypoints/_vertical_target` (Float32), publishes the current altitude target
 
-- `publish_debug_markers` (bool_t), if set to True, the node will publish markers for debugging purposes.
+Topic names are hardcoded in the node, so the `controllers/waypoints` block in `helm.yaml` has to match them.
+
+## Dynamic Reconfigure Params
+
+Every param above can be changed at runtime:
 
 - `ignore_altitude` (bool_t), if true, Z values will be disregarded.
 
@@ -85,11 +93,15 @@ Here's a diagram showing the possible states of the planner, and which distances
 
 - `max_line_divergence` (double_t), the maximum distance that the robot can diverge from the line between the goals.
 
+- `robot_width` (double_t), the width of the robot. The obstacle planner only guarantees a clear corridor `max_line_divergence` wide, so the planner reaches maximum correction at `max_line_divergence - robot_width / 2` instead, which keeps the hull inside the cleared corridor rather than just the origin of `robot_frame`. Leave at 0 to steer off the raw divergence.
+
 - `min_project_dist` (double_t), the minimum projection distance for the goal.
 
 - `max_project_dist` (double_t), the maximum projection distance for the goal.
 
-- `goal_distance_threshold` (double_t), the distance at which a goal is considered reached.
+- `xy_distance_threshold` (double_t), the horizontal distance at which a goal is considered reached.
+
+- `z_distance_threshold` (double_t), the vertical distance at which a goal is considered reached.
 
 - `P` (double_t), the proportional gain for the PID controller that controls the heading of the robot.
 
@@ -100,37 +112,3 @@ Here's a diagram showing the possible states of the planner, and which distances
 - `side_offset_mult` (double_t), multiplier for the side projection of the robot's position.
 
 - `rate` (int_t), the rate at which the robot updates its position and velocity.
-
-Based on the code you've provided, here's an addition to the documentation that describes the functionality of your newly added node:
-
----
-
-## Bounding Box to Path Helper
-
-This package also contains a small helper demo node that takes a rectangle defined as a PolygonStamped and turns it into various patterns which then get published as a Path that the line planer can execute. Right now it provides three different patterns: lawnmower, expanding square, and victor sierra. 
-
-The lawnmower pattern creates a path in a back-and-forth, or "mowing the lawn" manner. The expanding square pattern creates a square outward spiral path. The victor sierra pattern is a coast guard sector search. 
-
-it also accepts a home polygon, which it uses to add a final waypoint that points back home after following the path, so the robot doesn't get stuck out of wifi range.
-
-## Params
-
-```xml
-<node name="area_to_path_node" pkg="line_planner" type="area_to_path_node.py" output="screen">
-	<param name="step_size" value="2.0"/> <!-- determines the distance between paralel lines -->
-</node>
-```
-
-## Subscribed Topics
-
-- `/area_to_path/lawnmower` (PolygonStamped), takes a 4 vertex square and creates a lawnmower path inside it.
-
-- `/area_to_path/expanding_square` (PolygonStamped), takes a 4 vertex square and creates an expanding square (spiral) path inside it.
-
-- `/area_to_path/victor_sierra` (PolygonStamped), takes a 4 vertex square and creates a victor sierra (star) path inside it.
-
-- `/area_to_path/home` (PolygonStamped), takes a 4 vertex square and sets the center point as the home position.
-
-## Published Topics
-
-- `/move_base_simple/waypoints` (Path), publishes the created path.

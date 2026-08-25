@@ -3,6 +3,8 @@
 #include <geometry_msgs/Twist.h>
 #include <std_msgs/String.h>
 #include <std_msgs/Bool.h>
+#include <std_msgs/Float32.h>
+#include <cmath>
 #include <unordered_map>
 #include <string>
 #include <boost/bind.hpp>
@@ -17,12 +19,14 @@ public:
 		nh_mux.param<std::string>("teleop_topic", teleop_topic, std::string("/cmd_vel_teleop"));
 		nh_mux.param<std::string>("selector_topic", selector_topic, std::string("/cmd_vel_mux/_active_topic"));
 		nh_mux.param<std::string>("teleop_override_active_topic", teleop_override_active_topic, std::string("/teleop_override_active"));
+		nh_mux.param<std::string>("speed_scale_topic", speed_scale_topic, std::string("/cmd_vel_mux/_speed_scale"));
 
 		cmd_vel_pub = nh.advertise<geometry_msgs::Twist>(out_topic, 10);
 		teleop_override_pub = nh.advertise<std_msgs::Bool>(teleop_override_active_topic, 10, true);
 
 		selector_sub = nh.subscribe(selector_topic, 10, &CmdVelMux::selector_callback, this);
 		teleop_sub = nh.subscribe(teleop_topic, 10, &CmdVelMux::teleop_callback, this);
+		speed_scale_sub = nh.subscribe(speed_scale_topic, 1, &CmdVelMux::speed_scale_callback, this);
 
 		ROS_INFO("CmdVelMux out topic: %s", out_topic.c_str());
 		ROS_INFO("CmdVelMux teleop override: %s", teleop_topic.c_str());
@@ -59,12 +63,15 @@ private:
 	std::string teleop_topic;
 	std::string selector_topic;
 	std::string teleop_override_active_topic;
+	std::string speed_scale_topic;
 	double teleop_timeout;
+	double speed_scale = 1.0;
 
 	ros::Publisher cmd_vel_pub;
 	ros::Publisher teleop_override_pub;
 	ros::Subscriber teleop_sub;
 	ros::Subscriber selector_sub;
+	ros::Subscriber speed_scale_sub;
 	std::unordered_map<std::string, ros::Subscriber> nav_subs;
 
 	std::string selector;
@@ -73,6 +80,23 @@ private:
 
 	void selector_callback(const std_msgs::String::ConstPtr& msg) {
 		selector = msg->data;
+	}
+
+	//The helm throttles the whole nav stack from one place here rather than in every controller.
+	//Teleop is deliberately left out of it: an operator with their hand on the stick is not the
+	//thing being held back.
+	void speed_scale_callback(const std_msgs::Float32::ConstPtr& msg) {
+		double scale = msg->data;
+
+		if (!std::isfinite(scale) || scale < 0.0 || scale > 1.0) {
+			ROS_WARN("CmdVelMux ignoring speed scale %f, staying at %.2f", scale, speed_scale);
+			return;
+		}
+
+		if (scale != speed_scale)
+			ROS_INFO("CmdVelMux speed scale: %.2f", scale);
+
+		speed_scale = scale;
 	}
 
 	void teleop_callback(const geometry_msgs::Twist::ConstPtr& msg) {
@@ -98,9 +122,19 @@ private:
 			publish_override_state();
 		}
 
-		if (selector == topic_name) {
+		if (selector != topic_name)
+			return;
+
+		if (speed_scale >= 1.0) {
 			cmd_vel_pub.publish(msg);
+			return;
 		}
+
+		//Forward speed only. The vessel is being asked to approach something carefully, and full
+		//turning and depth authority is what lets it do that rather than merely arrive later.
+		geometry_msgs::Twist throttled = *msg;
+		throttled.linear.x *= speed_scale;
+		cmd_vel_pub.publish(throttled);
 	}
 
 	void publish_override_state() {
@@ -111,7 +145,7 @@ private:
 };
 
 int main(int argc, char** argv) {
-	ros::init(argc, argv, "mux_node");
+	ros::init(argc, argv, "tinyhelm_cmd_vel_mux");
 	ros::NodeHandle nh("~");
 	CmdVelMux mux(nh);
 	ros::spin();

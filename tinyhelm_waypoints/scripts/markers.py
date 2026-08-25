@@ -8,12 +8,14 @@ from geometry_msgs.msg import Point, Pose
 
 class DebugMarkers:
 
-    def __init__(self, planning_frame):
+    def __init__(self, planning_frame, topic_string):
         self.planning_frame = planning_frame
-        self.marker_pub = rospy.Publisher("line_planner/markers", MarkerArray, queue_size=1)
+        self.marker_pub = rospy.Publisher(topic_string, MarkerArray, queue_size=1)
 
         self.queued_marker_array = None
         self.publish_timer = rospy.Timer(rospy.Duration(0.2), self._timer_callback)  # 200 ms throttle
+
+        self.LIFETIME = rospy.Duration(2.0) # in case the core cuts us off
 
     def _timer_callback(self, event):
         if self.queued_marker_array is not None:
@@ -61,6 +63,7 @@ class DebugMarkers:
             marker.scale.z = size
             marker.color = ColorRGBA(r, g, b, 0.5)
             marker.id = marker_id
+            marker.lifetime = self.LIFETIME
             return marker
 
         def line_marker(p_from, p_to, marker_id, r, g, b):
@@ -72,6 +75,7 @@ class DebugMarkers:
             marker.colors = [ColorRGBA(r, g, b, 1.0), ColorRGBA(r, g, b, 1.0)]
             marker.scale.x = 0.03
             marker.id = marker_id
+            marker.lifetime = self.LIFETIME
             return marker
 
         start_left, start_right, end_left, end_right = self.get_side_vec(start_goal, end_goal, max_divergence)

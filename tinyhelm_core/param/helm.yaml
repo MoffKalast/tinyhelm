@@ -1,0 +1,90 @@
+robot_frame: base_link
+planning_frame: local
+
+tinyhelm_core:
+
+  home_topic: /tinyhelm/set_home      # PoseStamped, defines failsafe location, auto-sets when enabled unless ever set manually
+  estop_topic: /tinyhelm/estop        # Empty, stops immediately and goes to stationkeeping
+  enabled_topic: /tinyhelm/enabled    # Bool, enables or disables the entire navigation stack
+  markers_topic: /tinyhelm/markers    # MarkerArray, aggregate of the active controller and all monitors
+
+  marker_rate: 10.0
+  marker_clear_period: 5.0
+
+  # An automatic hold at the end of a plan only pins the last waypoint while the vessel is within the sum of these, otherwise the plan was truncated under us and it holds in place instead.
+  hold_reach_params:
+    - /tinyhelm_stationkeeping/max_divergence
+    - /tinyhelm_waypoints/xy_distance_threshold
+
+  controllers:
+    waypoints:
+      path: /waypoints/_path              #Path, mission or revision, it picks up wherever it already is
+      stop: /waypoints/_clear             #Empty
+      cmd_vel: /cmd_vel_waypoints         #Twist
+      status: /waypoints/_status          #ControllerStatus (in)
+      markers: /waypoints/_markers        #MarkerArray (in)
+      current_path: /waypoints/_plan      #Path (in), what it is actually following, relayed to the monitors
+
+    stationkeeping:
+      pose: /stationkeeping/_pose         #PoseStamped
+      stop: /stationkeeping/_clear        #Empty
+      cmd_vel: /cmd_vel_stationkeeping    #Twist
+      status: /stationkeeping/_status     #ControllerStatus (in)
+      markers: /stationkeeping/_markers   #MarkerArray (in)
+
+  monitors:
+    obstacles:
+      mission_in: /obstacles/_mission_in              #Path, the mission as executed, including any transit leg
+      current_path_in: /obstacles/_current_path_in    #Path, relay of what the active controller is following
+      revised_path_out: /obstacles/_revised_path_out  #Path, proposed refinement of the current path
+      status: /obstacles/_status                      #MonitorStatus (in)
+      markers: /obstacles/_markers                    #MarkerArray (in)
+
+  behaviour_topics:
+    goal:
+      topic: /tinyhelm/goal                   #go to this spot
+      type: PoseStamped
+      controller: waypoints
+
+    goal_and_return:
+      topic: /tinyhelm/goal_and_return         #go to this spot and return
+      type: PoseStamped
+      controller: waypoints
+
+    waypoints:
+      topic: /tinyhelm/waypoints               #navigate from start to end
+      type: Path
+      controller: waypoints
+
+    waypoints_and_return:
+      topic: /tinyhelm/waypoints_and_return    #waypoints, but return in flipped order when done
+      type: Path
+      controller: waypoints
+
+    loiter_circle:
+      topic: /tinyhelm/loiter_circle           #perpetual waypoints, end and start goal will get linked together
+      type: Path
+      controller: waypoints
+
+    loiter_line:
+      topic: /tinyhelm/loiter_line             #perpetual waypoints_and_return
+      type: Path
+      controller: waypoints
+
+    stationkeeping:
+      topic: /tinyhelm/hold_position          #stay in this position
+      type: PoseStamped
+      controller: stationkeeping
+
+  cmd_vel_mux:
+    out_topic: /cmd_vel
+    teleop_topic: /cmd_vel_teleop
+    teleop_timeout: 2.0 #if there's no teleop mesages, nav gets control after this delay
+    selector_topic: /cmd_vel_mux/_active_topic
+
+    # A monitor reporting SLOW throttles every controller at the mux instead of in the controllers
+    # themselves, so none of them need to know it is happening. Teleop is never scaled. Only forward
+    # speed is: turning and depth authority are what let the vessel approach something carefully.
+    speed_scale_topic: /cmd_vel_mux/_speed_scale #Float32
+    slow_speed_scale: 0.5
+
