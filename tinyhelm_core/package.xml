@@ -1,6 +1,6 @@
 <package format="2">
     <name>tinyhelm_core</name>
-    <version>0.0.1</version>
+    <version>1.0.0</version>
     <description>Core control nodes.</description>
     <maintainer email="vid.rijavec@fri.uni-lj.si">MoffKalast</maintainer>
     <license>BSD</license>
@@ -8,8 +8,14 @@
     <depend>rospy</depend>
     <depend>roscpp</depend>
     <depend>dynamic_reconfigure</depend>
+    <depend>tf</depend>
+    <depend>tf2_ros</depend>
+    <depend>tf2_geometry_msgs</depend>
+    <depend>nav_msgs</depend>
+    <depend>visualization_msgs</depend>
 
     <buildtool_depend>catkin</buildtool_depend>
+    <build_depend>message_generation</build_depend>
     <build_depend>actionlib_msgs</build_depend>
     <build_depend>geometry_msgs</build_depend>
     <build_depend>move_base_msgs</build_depend>

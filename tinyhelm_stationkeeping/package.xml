@@ -1,12 +1,19 @@
 <package format="2">
     <name>tinyhelm_stationkeeping</name>
-    <version>0.0.1</version>
+    <version>1.0.0</version>
     <description>A station keeping behaviour for tinyhelm.</description>
     <maintainer email="vid.rijavec@fri.uni-lj.si">MoffKalast</maintainer>
     <license>BSD</license>
 
     <depend>rospy</depend>
     <depend>dynamic_reconfigure</depend>
+    <depend>tinyhelm_core</depend>
+    <depend>tf</depend>
+    <depend>tf2_ros</depend>
+    <depend>tf2_geometry_msgs</depend>
+    <depend>nav_msgs</depend>
+    <depend>visualization_msgs</depend>
+    <depend>python3-numpy</depend>
 
     <buildtool_depend>catkin</buildtool_depend>
     <build_depend>actionlib_msgs</build_depend>
@@ -22,7 +29,6 @@
     <exec_depend>actionlib_msgs</exec_depend>
     <exec_depend>move_base_msgs</exec_depend>
     <exec_depend>std_msgs</exec_depend>
-    <exec_depend>tinyhelm_core</exec_depend>
     <exec_depend>message_runtime</exec_depend>
 
 </package>

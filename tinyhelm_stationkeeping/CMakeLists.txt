@@ -7,7 +7,12 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   move_base_msgs
   std_msgs
-  message_generation
+  nav_msgs
+  visualization_msgs
+  tf
+  tf2_ros
+  tf2_geometry_msgs
+  tinyhelm_core
 )
 
 generate_dynamic_reconfigure_options(
@@ -15,7 +20,7 @@ generate_dynamic_reconfigure_options(
 )
 
 catkin_package(
-  CATKIN_DEPENDS geometry_msgs dynamic_reconfigure rospy move_base_msgs std_msgs message_runtime
+  CATKIN_DEPENDS geometry_msgs dynamic_reconfigure rospy move_base_msgs std_msgs nav_msgs visualization_msgs tf tf2_ros tf2_geometry_msgs tinyhelm_core message_runtime
 )
 
 include_directories(

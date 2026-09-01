@@ -112,6 +112,11 @@ class LocalGrid:
 		if index.size == 0:
 			return None
 
+		if credit_delta < 0:
+			index = index[now - self.last_seen.reshape(-1)[index] >= self.grace]
+			if index.size == 0:
+				return None
+
 		credit = self.credit.reshape(-1)
 		last_seen = self.last_seen.reshape(-1)
 		last_credit = self.last_credit.reshape(-1)

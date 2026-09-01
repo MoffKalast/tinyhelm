@@ -8,6 +8,11 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   move_base_msgs
   std_msgs
+  nav_msgs
+  visualization_msgs
+  tf
+  tf2_ros
+  tf2_geometry_msgs
   message_generation
 )
 
@@ -23,7 +28,7 @@ generate_messages(
 )
 
 catkin_package(
-  CATKIN_DEPENDS roscpp geometry_msgs dynamic_reconfigure rospy move_base_msgs std_msgs message_runtime
+  CATKIN_DEPENDS roscpp geometry_msgs dynamic_reconfigure rospy move_base_msgs std_msgs nav_msgs visualization_msgs tf tf2_ros tf2_geometry_msgs message_runtime
 )
 
 include_directories(

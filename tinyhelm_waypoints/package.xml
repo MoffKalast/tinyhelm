@@ -1,16 +1,23 @@
 <package format="2">
     <name>tinyhelm_waypoints</name>
-    <version>0.0.1</version>
+    <version>1.0.0</version>
     <description>A simple planner that attempts to keep the robot close to a line between the starting and target goal.</description>
     <maintainer email="vid.rijavec@fri.uni-lj.si">MoffKalast</maintainer>
     <license>BSD</license>
 
     <depend>rospy</depend>
     <depend>dynamic_reconfigure</depend>
+    <depend>tinyhelm_core</depend>
+    <depend>tf</depend>
+    <depend>tf2_ros</depend>
+    <depend>tf2_geometry_msgs</depend>
+    <depend>geometry_msgs</depend>
+    <depend>nav_msgs</depend>
+    <depend>visualization_msgs</depend>
+    <depend>python3-numpy</depend>
 
     <buildtool_depend>catkin</buildtool_depend>
     <build_depend>actionlib_msgs</build_depend>
-    <build_depend>geometry_msgs</build_depend>
     <build_depend>move_base_msgs</build_depend>
     <build_depend>std_msgs</build_depend>
 
@@ -18,10 +25,8 @@
     <build_export_depend>move_base_msgs</build_export_depend>
     <build_export_depend>std_msgs</build_export_depend>
 
-    <exec_depend>geometry_msgs</exec_depend>
     <exec_depend>actionlib_msgs</exec_depend>
     <exec_depend>move_base_msgs</exec_depend>
     <exec_depend>std_msgs</exec_depend>
-    <exec_depend>tinyhelm_core</exec_depend>
 
 </package>

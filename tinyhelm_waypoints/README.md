@@ -1,8 +1,8 @@
-# tinyhelm waypoints planner
+# The Waypoints Controller
 
-Based on the Simple Projecting Line Planner.
+A continuation of the robust [Simple Projecting Line Planner](https://github.com/MoffKalast/line_planner).
 
-A local planner that takes two goals (last and next), and follows a projected goal that keeps it close to the line segment between the two goals. Designed to resist strong side forces, such as from wind or water current.
+A carrot planner that takes two goals (last and next), and follows a projected goal that keeps it close to the line segment between the two goals. Designed to resist strong side forces, such as from wind or water current.
 
 ![demo image](docs/demo.gif)
 

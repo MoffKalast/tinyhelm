@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 import math
 import rospy
-import noise
 from scipy.spatial.transform import Rotation
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import NavSatFix, Imu
-from wavefield import WaveField
+from wavefield import WaveField, drift
 from geo_utils import integrate_latlon
 
 class VesselSimNode:
@@ -101,8 +100,8 @@ class VesselSimNode:
         vn = self.u * math.sin(self.yaw) + self.v * math.cos(self.yaw)
 
         # --- Add current & wind ---
-        wind_n = self.wind_base_n + self.wind_amp * noise.pnoise1(self.sim_time * self.wind_freq)
-        wind_e = self.wind_base_e + self.wind_amp * noise.pnoise1((self.sim_time + 100) * self.wind_freq)
+        wind_n = self.wind_base_n + self.wind_amp * drift(self.sim_time * self.wind_freq)
+        wind_e = self.wind_base_e + self.wind_amp * drift(self.sim_time * self.wind_freq, 100.0)
 
         vn_total = vn + self.current_n + wind_n
         ve_total = ve + self.current_e + wind_e
